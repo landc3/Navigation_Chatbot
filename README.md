@@ -95,7 +95,7 @@ curl http://localhost:8000/api/health
 # 聊天接口
 curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "东风天龙仪表图"}'
+  -d '{"message": "东风天龙仪表针脚图"}'
 ```
 
 ## 📚 开发文档

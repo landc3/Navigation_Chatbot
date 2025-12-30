@@ -8,7 +8,7 @@ function App() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: '您好！我是智能车辆电路图资料导航助手。请输入您要查找的电路图关键词，例如：东风天龙仪表图'
+      content: '您好！我是智能车辆电路图资料导航助手。请输入您要查找的电路图关键词，例如：东风天龙仪表针脚图'
     }
   ])
   const [isLoading, setIsLoading] = useState(false)
@@ -38,7 +38,9 @@ function App() {
       const assistantMessage = {
         role: 'assistant',
         content: response.message,
-        results: response.results
+        results: response.results,
+        options: response.options,
+        needs_choice: response.needs_choice
       }
       setMessages(prev => [...prev, assistantMessage])
     } catch (error) {
@@ -61,7 +63,11 @@ function App() {
       <main className="app-main">
         <div className="messages-container">
           {messages.map((message, index) => (
-            <ChatMessage key={index} message={message} />
+            <ChatMessage 
+              key={index} 
+              message={message} 
+              onOptionClick={handleSendMessage}
+            />
           ))}
           {isLoading && (
             <div className="loading-indicator">
