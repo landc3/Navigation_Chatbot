@@ -1,0 +1,33 @@
+# Web 框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# 数据处理
+pandas==2.1.3
+numpy==1.26.2
+
+# 通义千问 SDK
+dashscope==1.17.0
+
+# 中文分词（用于全文索引）
+jieba==0.42.1
+
+# 环境变量管理
+python-dotenv==1.0.0
+
+# HTTP 客户端（前端调用后端）
+httpx==0.25.2
+
+# CORS 支持（FastAPI 内置，但列出以备参考）
+# fastapi 已包含
+
+# 可选：拼音匹配（如果需要）
+# pypinyin==0.49.0
+
+# 可选：向量数据库（如果后续需要语义搜索）
+# chromadb==0.4.18
+
+# 开发工具
+pytest==7.4.3
+black==23.11.0
+
