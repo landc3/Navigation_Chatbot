@@ -89,3 +89,4 @@ class CircuitDiagram:
                 return True
         return False
 
+

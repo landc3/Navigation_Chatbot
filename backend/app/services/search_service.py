@@ -5,18 +5,13 @@
 from typing import List, Dict, Optional, Tuple
 import jieba
 from backend.app.models.circuit_diagram import CircuitDiagram
+from backend.app.models.intent import IntentResult
+from backend.app.models.types import ScoredResult, rebuild_scored_result_model
 from backend.app.utils.data_loader import get_data_loader
 from backend.app.utils.hierarchy_util import HierarchyUtil
 
-
-class ScoredResult:
-    """带评分的搜索结果"""
-    def __init__(self, diagram: CircuitDiagram, score: float):
-        self.diagram = diagram
-        self.score = score
-    
-    def __repr__(self):
-        return f"ScoredResult(id={self.diagram.id}, score={self.score:.2f})"
+# 确保 ScoredResult 模型已重建（解决前向引用问题）
+rebuild_scored_result_model()
 
 
 class SearchService:
@@ -172,7 +167,8 @@ class SearchService:
         query: str,
         logic: str = "AND",
         max_results: int = 5,
-        use_fuzzy: bool = True
+        use_fuzzy: bool = True,
+        intent_result: Optional[IntentResult] = None
     ) -> List[ScoredResult]:
         """
         搜索电路图
@@ -182,12 +178,20 @@ class SearchService:
             logic: 逻辑运算符（"AND" 或 "OR"）
             max_results: 最大返回结果数
             use_fuzzy: 是否使用模糊匹配
+            intent_result: 意图理解结果（可选，如果提供则优先使用）
             
         Returns:
             评分后的结果列表（按评分降序）
         """
         if not query or not query.strip():
             return []
+        
+        # 如果提供了意图理解结果，优先使用意图理解的信息
+        if intent_result:
+            # 使用意图理解结果构建搜索查询
+            search_query = intent_result.get_search_query()
+            if search_query and search_query.strip():
+                query = search_query.strip()
         
         # 提取关键词
         keywords = self._extract_keywords(query.strip())
@@ -237,9 +241,13 @@ class SearchService:
         
         # 转换为ScoredResult列表并排序
         results = [
-            ScoredResult(item["diagram"], item["total_score"])
+            ScoredResult(diagram=item["diagram"], score=item["total_score"])
             for item in diagram_scores.values()
         ]
+        
+        # 如果提供了意图理解结果，调整评分权重
+        if intent_result:
+            results = self._adjust_scores_by_intent(results, intent_result)
         
         # 按评分降序排序
         results.sort(key=lambda x: x.score, reverse=True)
@@ -248,6 +256,82 @@ class SearchService:
         if max_results >= len(results):
             return results
         return results[:max_results]
+    
+    def _adjust_scores_by_intent(
+        self,
+        results: List[ScoredResult],
+        intent_result: IntentResult
+    ) -> List[ScoredResult]:
+        """
+        根据意图理解结果调整评分
+        
+        Args:
+            results: 搜索结果列表
+            intent_result: 意图理解结果
+            
+        Returns:
+            调整后的搜索结果列表
+        """
+        for result in results:
+            diagram = result.diagram
+            bonus = 0.0
+            
+            # 品牌匹配加分
+            if intent_result.has_brand() and diagram.brand:
+                if intent_result.brand.lower() in diagram.brand.lower() or \
+                   diagram.brand.lower() in intent_result.brand.lower():
+                    bonus += 0.5
+            
+            # 型号匹配加分
+            if intent_result.has_model() and diagram.model:
+                if intent_result.model.lower() in diagram.model.lower() or \
+                   diagram.model.lower() in intent_result.model.lower():
+                    bonus += 0.6
+            
+            # 类型匹配加分
+            if intent_result.has_diagram_type() and diagram.diagram_type:
+                if intent_result.diagram_type.lower() in diagram.diagram_type.lower() or \
+                   diagram.diagram_type.lower() in intent_result.diagram_type.lower():
+                    bonus += 0.4
+            
+            # 应用加分
+            result.score += bonus
+        
+        return results
+    
+    def search_with_intent(
+        self,
+        intent_result: IntentResult,
+        logic: str = "AND",
+        max_results: int = 5,
+        use_fuzzy: bool = True
+    ) -> List[ScoredResult]:
+        """
+        使用意图理解结果进行搜索
+        
+        Args:
+            intent_result: 意图理解结果
+            logic: 逻辑运算符（"AND" 或 "OR"）
+            max_results: 最大返回结果数
+            use_fuzzy: 是否使用模糊匹配
+            
+        Returns:
+            评分后的结果列表（按评分降序）
+        """
+        # 构建搜索查询
+        query = intent_result.get_search_query()
+        
+        # 如果意图理解没有提取到信息，使用原始查询
+        if not query or query.strip() == "":
+            query = intent_result.original_query
+        
+        return self.search(
+            query=query,
+            logic=logic,
+            max_results=max_results,
+            use_fuzzy=use_fuzzy,
+            intent_result=intent_result
+        )
     
     def filter_by_hierarchy(
         self,

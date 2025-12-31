@@ -22,7 +22,7 @@ class Config:
     BACKEND_PORT = int(os.getenv('BACKEND_PORT', 8000))
     
     # 前端配置
-    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3500')
     
     # 数据文件路径
     DATA_CSV_PATH = os.getenv('DATA_CSV_PATH', '资料清单.csv')

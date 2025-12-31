@@ -36,7 +36,23 @@ ALI_QWEN_API_KEY=your_api_key_here
 
 ### 启动服务
 
-#### 启动后端（终端1）
+#### 方法1：一键启动（推荐）⭐
+
+使用 `run.py` 脚本一键启动前后端并自动打开浏览器：
+
+```bash
+python run.py
+```
+
+**功能特点**：
+- ✅ 自动检查并安装依赖
+- ✅ 同时启动前后端服务
+- ✅ 自动打开浏览器访问前端
+- ✅ 优雅处理服务停止
+
+#### 方法2：手动启动
+
+##### 启动后端（终端1）
 ```bash
 cd backend
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -44,17 +60,19 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 后端将在 `http://localhost:8000` 启动
 
-#### 启动前端（终端2）
+##### 启动前端（终端2）
 ```bash
 cd frontend
 npm run dev
 ```
 
-前端将在 `http://localhost:3000` 启动
+前端将在 `http://localhost:3500` 启动
 
 ### 访问应用
 
-打开浏览器访问：`http://localhost:3000`
+- **前端**: http://localhost:3500
+- **后端 API**: http://localhost:8000
+- **API 文档**: http://localhost:8000/docs
 
 ## 📁 项目结构
 

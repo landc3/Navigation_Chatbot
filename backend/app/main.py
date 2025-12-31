@@ -22,12 +22,29 @@ app = FastAPI(
 )
 
 # 配置CORS
+# 构建允许的源列表，过滤掉 None 值
+allowed_origins = [
+    "http://localhost:3500",  # 前端主端口
+    "http://localhost:3100",  # 备用端口
+    "http://localhost:3000",  # 备用端口
+    "http://localhost:3001",  # 备用端口
+    "http://localhost:5173",
+    "http://127.0.0.1:3500",  # 前端主端口
+    "http://127.0.0.1:3100",  # 备用端口
+    "http://127.0.0.1:3000",  # 备用端口
+    "http://127.0.0.1:3001",  # 备用端口
+    "http://127.0.0.1:5173",
+]
+if config.FRONTEND_URL:
+    allowed_origins.append(config.FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[config.FRONTEND_URL, "http://localhost:3000", "http://localhost:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # 注册路由
