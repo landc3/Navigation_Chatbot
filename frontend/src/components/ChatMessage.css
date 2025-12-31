@@ -24,9 +24,9 @@
 }
 
 .message-content {
-  max-width: 70%;
-  padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
+  max-width: 80%;
+  padding: 1rem 1.25rem;
+  border-radius: 0.75rem;
   word-wrap: break-word;
 }
 
@@ -42,8 +42,9 @@
 }
 
 .message-text {
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
+  font-size: 0.95rem;
 }
 
 .message-results {
@@ -68,11 +69,16 @@
 }
 
 .message-results li {
-  padding: 0.5rem;
-  margin-bottom: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
   background-color: rgba(0, 0, 0, 0.05);
-  border-radius: 0.25rem;
+  border-radius: 0.5rem;
   font-size: 0.9rem;
+  transition: background-color 0.2s ease;
+}
+
+.message-results li:hover {
+  background-color: rgba(0, 0, 0, 0.08);
 }
 
 .chat-message.user .message-results li {

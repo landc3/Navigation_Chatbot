@@ -1,53 +1,108 @@
 .chat-input-form {
-  padding: 1rem;
+  padding: 1.5rem 3rem;
   background-color: white;
-  border-top: 1px solid #e5e7eb;
+  flex-shrink: 0;
 }
 
 .chat-input-container {
   display: flex;
-  gap: 0.5rem;
-  max-width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.file-input-hidden {
+  display: none;
+}
+
+.file-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  background-color: transparent;
+  color: #9ca3af;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.file-button:hover:not(:disabled) {
+  background-color: #f3f4f6;
+  color: #6b7280;
+}
+
+.file-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .chat-input {
   flex: 1;
-  padding: 0.75rem 1rem;
-  border: 1px solid #d1d5db;
-  border-radius: 0.5rem;
-  font-size: 1rem;
+  padding: 1.25rem 1.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 1.5rem;
+  font-size: 0.95rem;
   outline: none;
-  transition: border-color 0.2s;
+  transition: all 0.2s ease;
+  background-color: #ffffff;
+  color: #1f2937;
+  min-height: 56px;
+}
+
+.chat-input::placeholder {
+  color: #9ca3af;
 }
 
 .chat-input:focus {
-  border-color: #2563eb;
+  border-color: #d1d5db;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
 }
 
 .chat-input:disabled {
-  background-color: #f3f4f6;
+  background-color: #f9fafb;
   cursor: not-allowed;
 }
 
 .send-button {
-  padding: 0.75rem 1.5rem;
-  background-color: #2563eb;
-  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  background-color: #f3f4f6;
+  color: #6b7280;
   border: none;
-  border-radius: 0.5rem;
-  font-size: 1rem;
-  font-weight: 500;
+  border-radius: 50%;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
 }
 
 .send-button:hover:not(:disabled) {
-  background-color: #1d4ed8;
+  background-color: #e5e7eb;
+  color: #374151;
 }
 
 .send-button:disabled {
-  background-color: #9ca3af;
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.send-button:not(:disabled) {
+  background-color: #000000;
+  color: #ffffff;
+}
+
+.send-button:not(:disabled):hover {
+  background-color: #1f2937;
 }
 
 

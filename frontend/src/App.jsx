@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import ChatMessage from './components/ChatMessage'
 import ChatInput from './components/ChatInput'
+import FileList from './components/FileList'
 import { sendMessage } from './services/api'
 import './App.css'
 
@@ -12,6 +13,14 @@ function App() {
     }
   ])
   const [isLoading, setIsLoading] = useState(false)
+  const [files, setFiles] = useState([
+    // 初始化已识别的文件
+    {
+      name: '资料清单.csv',
+      size: null,
+      uploadTime: '已识别'
+    }
+  ])
   const messagesEndRef = useRef(null)
 
   const scrollToBottom = () => {
@@ -55,29 +64,55 @@ function App() {
     }
   }
 
+  const handleFileUpload = (file) => {
+    const newFile = {
+      name: file.name,
+      size: file.size,
+      uploadTime: new Date().toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    }
+    setFiles(prev => [...prev, newFile])
+    
+    // 这里可以添加文件上传到后端的逻辑
+    // 例如：uploadFile(file)
+  }
+
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>智能车辆电路图资料导航 Chatbot</h1>
-      </header>
-      <main className="app-main">
-        <div className="messages-container">
-          {messages.map((message, index) => (
-            <ChatMessage 
-              key={index} 
-              message={message} 
-              onOptionClick={handleSendMessage}
-            />
-          ))}
-          {isLoading && (
-            <div className="loading-indicator">
-              <span>正在思考...</span>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-        <ChatInput onSend={handleSendMessage} disabled={isLoading} />
-      </main>
+      <div className="app-content">
+        <main className="app-main">
+          <div className="brand-header">
+            <h1 className="brand-name">Chatbot</h1>
+          </div>
+          <div className="messages-container">
+            {messages.map((message, index) => (
+              <ChatMessage 
+                key={index} 
+                message={message} 
+                onOptionClick={handleSendMessage}
+              />
+            ))}
+            {isLoading && (
+              <div className="loading-indicator">
+                <span>正在思考...</span>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+          <ChatInput 
+            onSend={handleSendMessage} 
+            onFileUpload={handleFileUpload}
+            disabled={isLoading} 
+          />
+        </main>
+        <aside className="file-sidebar">
+          <FileList files={files} />
+        </aside>
+      </div>
     </div>
   )
 }
