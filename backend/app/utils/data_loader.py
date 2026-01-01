@@ -41,13 +41,30 @@ class DataLoader:
             csv_file = project_root / config.DATA_CSV_PATH
             self.csv_path = str(csv_file)
         self.data: List[CircuitDiagram] = []
+        self.encoding_used = None
         self._load_data()
     
     def _load_data(self):
         """加载CSV数据"""
         try:
-            # 读取CSV文件
-            df = pd.read_csv(self.csv_path, encoding='utf-8')
+            # 读取CSV文件，支持常见中文编码回退
+            encodings_to_try = ['utf-8', 'utf-8-sig', 'gbk', 'gb18030']
+            last_error = None
+            df = None
+            for enc in encodings_to_try:
+                try:
+                    df = pd.read_csv(self.csv_path, encoding=enc)
+                    self.encoding_used = enc
+                    break
+                except UnicodeDecodeError as e:
+                    last_error = e
+                    continue
+            
+            if df is None:
+                raise Exception(f"无法读取CSV文件，尝试的编码: {encodings_to_try}，原始错误: {last_error}")
+            
+            if self.encoding_used != 'utf-8':
+                print(f"[WARN] 读取CSV使用编码 {self.encoding_used}，建议统一为UTF-8以避免问题")
             
             # 验证必要的列是否存在
             required_columns = ['ID', '层级路径', '关联文件名称']

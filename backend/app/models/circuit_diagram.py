@@ -50,6 +50,23 @@ class CircuitDiagram:
                   '神钢', '沃尔沃', '小松', '东风', '解放', '重汽', '福田', '乘龙',
                   '红岩', '豪瀚', '欧曼', '上汽大通', '五十铃', '康明斯', '玉柴']
         
+        # 复合品牌列表（需要优先匹配）
+        compound_brands = [
+            "东风天龙", "东风乘龙", "一汽解放", "中国重汽", "上汽大通",
+            "福田欧曼", "红岩杰狮", "重汽豪瀚", "重汽豪汉"
+        ]
+        
+        # 优先匹配复合品牌
+        for i, level in enumerate(self.hierarchy_path):
+            for compound_brand in compound_brands:
+                if compound_brand in level:
+                    self.brand = compound_brand
+                    # 品牌后面通常是型号或系列
+                    if i + 1 < len(self.hierarchy_path):
+                        self.model = self.hierarchy_path[i + 1]
+                    return
+        
+        # 然后匹配常见品牌
         for i, level in enumerate(self.hierarchy_path):
             if level in brands:
                 self.brand = level

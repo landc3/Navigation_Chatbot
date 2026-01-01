@@ -1,350 +1,326 @@
 """
-层级路径工具模块
-提供层级路径解析、筛选和选项提取功能
+层级工具模块
+
+为 CircuitDiagram 提供：
+- 品牌/型号/类型/车辆类别筛选
+- 从结果中提取选择题选项
+- 从结果中汇总所有层级字段（用于fallback）
 """
-from typing import List, Dict, Optional, Set
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Set
+
 from backend.app.models.circuit_diagram import CircuitDiagram
+import re
+import unicodedata
 
 
 class HierarchyUtil:
-    """层级路径工具类"""
-    
-    # 常见品牌列表
-    COMMON_BRANDS = [
-        '三一', '徐工', '斗山', '杰西博', '久保田', '卡特彼勒', '凯斯',
-        '龙工', '柳工', '雷沃', '日立', '山东临工', '山重建机', '山河智能',
-        '神钢', '沃尔沃', '小松', '东风', '解放', '重汽', '福田', '乘龙',
-        '红岩', '豪瀚', '欧曼', '上汽大通', '五十铃', '康明斯', '玉柴'
+    """
+    层级与字段提取工具类（静态方法集合）。
+    注意：该类被多个服务直接 import 使用，属于启动链路关键依赖。
+    """
+
+    # 复合品牌列表（需要优先匹配）
+    COMPOUND_BRANDS: List[str] = [
+        "东风天龙",
+        "东风乘龙",
+        "一汽解放",
+        "中国重汽",
+        "上汽大通",
+        "福田欧曼",
+        "红岩杰狮",
+        "重汽豪瀚",
+        "重汽豪汉",
     ]
-    
-    # 常见电路图类型
-    COMMON_DIAGRAM_TYPES = [
-        'ECU电路图', '整车电路图', '仪表电路图', '仪表图', 'ECU图',
-        '线路图', '电路图', '针脚图', '接线图'
+
+    # 常见品牌列表（用于验证/解析）
+    COMMON_BRANDS: List[str] = [
+        "三一",
+        "徐工",
+        "斗山",
+        "杰西博",
+        "久保田",
+        "卡特彼勒",
+        "凯斯",
+        "龙工",
+        "柳工",
+        "雷沃",
+        "日立",
+        "山东临工",
+        "山重建机",
+        "山河智能",
+        "神钢",
+        "沃尔沃",
+        "小松",
+        "东风",
+        "解放",
+        "重汽",
+        "福田",
+        "乘龙",
+        "红岩",
+        "豪瀚",
+        "欧曼",
+        "上汽大通",
+        "五十铃",
+        "康明斯",
+        "玉柴",
     ]
-    
-    # 常见车辆类别
-    COMMON_VEHICLE_CATEGORIES = [
-        '工程机械', '商用车', '乘用车', '客车', '货车'
+
+    # 常见类型列表（用于意图验证/解析）
+    COMMON_DIAGRAM_TYPES: List[str] = [
+        "仪表电路图",
+        "ECU电路图",
+        "整车电路图",
+        "电路图",
+        "仪表图",
+        "ECU图",
+        "整车图",
+        "线路图",
+        "接线图",
+        "针脚图",
+        "仪表模块",
     ]
-    
+
+    # 常见车辆类别（用于意图验证/解析）
+    COMMON_VEHICLE_CATEGORIES: List[str] = [
+        "工程机械",
+        "商用车",
+        "乘用车",
+    ]
+
     @staticmethod
-    def extract_brand(hierarchy_path: List[str]) -> Optional[str]:
-        """
-        从层级路径中提取品牌
-        
-        Args:
-            hierarchy_path: 层级路径列表
-            
-        Returns:
-            品牌名称，如果未找到则返回None
-        """
-        for level in hierarchy_path:
-            if level in HierarchyUtil.COMMON_BRANDS:
-                return level
-        
-        # 模糊匹配品牌（包含关系）
-        for level in hierarchy_path:
-            for brand in HierarchyUtil.COMMON_BRANDS:
-                if brand in level or level in brand:
-                    return brand
-        
-        return None
-    
+    def _norm(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        # 统一规范化：全半角、大小写、去分隔符（下划线/空格/括号等）
+        s2 = unicodedata.normalize("NFKC", str(s))
+        s2 = s2.replace("*", "")
+        s2 = s2.lower()
+        s2 = re.sub(r"[\s_\-·•.。/\\()（）\[\]【】{}<>《》“”\"'’`~!@#$%^&*+=|:;，,；：?？]+", "", s2)
+        return s2.strip()
+
     @staticmethod
-    def extract_diagram_type(hierarchy_path: List[str]) -> Optional[str]:
-        """
-        从层级路径中提取电路图类型
-        
-        Args:
-            hierarchy_path: 层级路径列表
-            
-        Returns:
-            电路图类型，如果未找到则返回None
-        """
-        for level in hierarchy_path:
-            for diagram_type in HierarchyUtil.COMMON_DIAGRAM_TYPES:
-                if diagram_type in level:
-                    return diagram_type
-        
-        # 如果第二层存在，通常就是类型
-        if len(hierarchy_path) > 1:
-            return hierarchy_path[1]
-        
-        return None
-    
-    @staticmethod
-    def extract_vehicle_category(hierarchy_path: List[str]) -> Optional[str]:
-        """
-        从层级路径中提取车辆类别
-        
-        Args:
-            hierarchy_path: 层级路径列表
-            
-        Returns:
-            车辆类别，如果未找到则返回None
-        """
-        for level in hierarchy_path:
-            if level in HierarchyUtil.COMMON_VEHICLE_CATEGORIES:
-                return level
-        
-        # 如果第三层存在，通常就是类别
-        if len(hierarchy_path) > 2:
-            return hierarchy_path[2]
-        
-        return None
-    
-    @staticmethod
-    def extract_model(hierarchy_path: List[str], brand: Optional[str] = None) -> Optional[str]:
-        """
-        从层级路径中提取型号
-        
-        Args:
-            hierarchy_path: 层级路径列表
-            brand: 品牌名称（如果已知，可以提高准确性）
-            
-        Returns:
-            型号名称，如果未找到则返回None
-        """
-        # 如果已知品牌，在品牌后面查找
-        if brand:
-            for i, level in enumerate(hierarchy_path):
-                if level == brand or brand in level:
-                    if i + 1 < len(hierarchy_path):
-                        return hierarchy_path[i + 1]
-        
-        # 否则，尝试在品牌位置后面查找
-        brand_pos = None
-        for i, level in enumerate(hierarchy_path):
-            if level in HierarchyUtil.COMMON_BRANDS:
-                brand_pos = i
-                break
-        
-        if brand_pos is not None and brand_pos + 1 < len(hierarchy_path):
-            return hierarchy_path[brand_pos + 1]
-        
-        # 如果层级路径长度足够，通常型号在品牌后面
-        if len(hierarchy_path) > 4:
-            return hierarchy_path[4]
-        
-        return None
-    
-    @staticmethod
-    def filter_by_brand(
-        diagrams: List[CircuitDiagram],
-        brand: str
-    ) -> List[CircuitDiagram]:
-        """
-        按品牌筛选电路图
-        
-        Args:
-            diagrams: 电路图列表
-            brand: 品牌名称
-            
-        Returns:
-            筛选后的电路图列表
-        """
-        results = []
-        brand_lower = brand.lower()
-        
-        for diagram in diagrams:
-            # 检查品牌字段
-            if diagram.brand and brand_lower in diagram.brand.lower():
-                results.append(diagram)
+    def _any_contains(haystacks: Iterable[str], needle: str) -> bool:
+        needle_n = HierarchyUtil._norm(needle)
+        if not needle_n:
+            return False
+        for h in haystacks:
+            h_n = HierarchyUtil._norm(h)
+            if not h_n:
                 continue
-            
-            # 检查层级路径
-            for level in diagram.hierarchy_path:
-                if brand_lower in level.lower():
-                    results.append(diagram)
-                    break
-        
-        return results
-    
+            if needle_n in h_n or h_n in needle_n:
+                return True
+        return False
+
     @staticmethod
-    def filter_by_model(
-        diagrams: List[CircuitDiagram],
-        model: str
-    ) -> List[CircuitDiagram]:
-        """
-        按型号筛选电路图
-        
-        Args:
-            diagrams: 电路图列表
-            model: 型号名称
-            
-        Returns:
-            筛选后的电路图列表
-        """
-        results = []
-        model_lower = model.lower()
-        
-        for diagram in diagrams:
-            # 检查型号字段
-            if diagram.model and model_lower in diagram.model.lower():
-                results.append(diagram)
+    def _diagram_text_fields(diagram: CircuitDiagram) -> List[str]:
+        fields: List[str] = []
+        fields.append(diagram.file_name or "")
+        fields.extend(diagram.hierarchy_path or [])
+        if diagram.brand:
+            fields.append(diagram.brand)
+        if diagram.model:
+            fields.append(diagram.model)
+        if diagram.diagram_type:
+            fields.append(diagram.diagram_type)
+        if diagram.vehicle_category:
+            fields.append(diagram.vehicle_category)
+        return fields
+
+    @staticmethod
+    def filter_by_brand(diagrams: Sequence[CircuitDiagram], brand: str) -> List[CircuitDiagram]:
+        """按品牌筛选（支持复合品牌与包含关系匹配）。"""
+        brand_n = HierarchyUtil._norm(brand)
+        if not brand_n:
+            return list(diagrams)
+
+        filtered: List[CircuitDiagram] = []
+        for d in diagrams:
+            # 优先使用解析字段
+            if d.brand and (brand_n in HierarchyUtil._norm(d.brand) or HierarchyUtil._norm(d.brand) in brand_n):
+                filtered.append(d)
                 continue
-            
-            # 检查文件名称
-            if model_lower in diagram.file_name.lower():
-                results.append(diagram)
+            # 回退：在层级路径/文件名中做包含匹配
+            if HierarchyUtil._any_contains(HierarchyUtil._diagram_text_fields(d), brand):
+                filtered.append(d)
+        return filtered
+
+    @staticmethod
+    def filter_by_model(diagrams: Sequence[CircuitDiagram], model: str) -> List[CircuitDiagram]:
+        """按型号筛选（包含匹配；兼容“系列”等后缀）。"""
+        model_n = HierarchyUtil._norm(model)
+        if not model_n:
+            return list(diagrams)
+
+        # 简单清理常见后缀，提升命中率
+        model_variants = {model_n}
+        for suf in ("系列", "系列图", "系列电路图"):
+            if model_n.endswith(suf):
+                model_variants.add(model_n[: -len(suf)].strip())
+
+        def _any_contains_strict(haystacks: Iterable[str], needle: str) -> bool:
+            """
+            Strict containment: only accept "needle in haystack".
+            Rationale: the previous bidirectional check (haystack in needle) can cause
+            over-matching when hierarchy contains generic short tokens like "天龙",
+            making "天龙" match "天龙KL_6x4牵引车" across unrelated variants.
+            """
+            needle_n = HierarchyUtil._norm(needle)
+            if not needle_n:
+                return False
+            for h in haystacks:
+                h_n = HierarchyUtil._norm(h)
+                if not h_n:
+                    continue
+                if needle_n in h_n:
+                    return True
+            return False
+
+        filtered: List[CircuitDiagram] = []
+        for d in diagrams:
+            # 优先使用解析字段
+            # IMPORTANT: Only accept "user_model in parsed_model".
+            # The reverse ("parsed_model in user_model") makes generic parsed values like "天龙"
+            # incorrectly match a specific selection like "天龙KL_6x4牵引车".
+            if d.model and any(v and (v in HierarchyUtil._norm(d.model)) for v in model_variants):
+                filtered.append(d)
                 continue
-            
-            # 检查层级路径
-            for level in diagram.hierarchy_path:
-                if model_lower in level.lower():
-                    results.append(diagram)
-                    break
-        
-        return results
-    
+            # 回退：在层级路径/文件名中搜索
+            fields = HierarchyUtil._diagram_text_fields(d)
+            if any(_any_contains_strict(fields, v) for v in model_variants):
+                filtered.append(d)
+        return filtered
+
     @staticmethod
-    def filter_by_diagram_type(
-        diagrams: List[CircuitDiagram],
-        diagram_type: str
-    ) -> List[CircuitDiagram]:
-        """
-        按电路图类型筛选
-        
-        Args:
-            diagrams: 电路图列表
-            diagram_type: 电路图类型
-            
-        Returns:
-            筛选后的电路图列表
-        """
-        results = []
-        type_lower = diagram_type.lower()
-        
-        for diagram in diagrams:
-            # 检查类型字段
-            if diagram.diagram_type and type_lower in diagram.diagram_type.lower():
-                results.append(diagram)
+    def filter_by_diagram_type(diagrams: Sequence[CircuitDiagram], diagram_type: str) -> List[CircuitDiagram]:
+        """按电路图类型筛选（包含匹配）。"""
+        t_n = HierarchyUtil._norm(diagram_type)
+        if not t_n:
+            return list(diagrams)
+
+        filtered: List[CircuitDiagram] = []
+        for d in diagrams:
+            if d.diagram_type and (t_n in HierarchyUtil._norm(d.diagram_type) or HierarchyUtil._norm(d.diagram_type) in t_n):
+                filtered.append(d)
                 continue
-            
-            # 检查层级路径
-            for level in diagram.hierarchy_path:
-                if type_lower in level.lower():
-                    results.append(diagram)
-                    break
-            
-            # 检查文件名称
-            if type_lower in diagram.file_name.lower():
-                results.append(diagram)
-        
-        return results
-    
+            if HierarchyUtil._any_contains(HierarchyUtil._diagram_text_fields(d), diagram_type):
+                filtered.append(d)
+        return filtered
+
     @staticmethod
-    def filter_by_vehicle_category(
-        diagrams: List[CircuitDiagram],
-        category: str
-    ) -> List[CircuitDiagram]:
-        """
-        按车辆类别筛选
-        
-        Args:
-            diagrams: 电路图列表
-            category: 车辆类别
-            
-        Returns:
-            筛选后的电路图列表
-        """
-        results = []
-        category_lower = category.lower()
-        
-        for diagram in diagrams:
-            # 检查类别字段
-            if diagram.vehicle_category and category_lower in diagram.vehicle_category.lower():
-                results.append(diagram)
+    def filter_by_vehicle_category(diagrams: Sequence[CircuitDiagram], vehicle_category: str) -> List[CircuitDiagram]:
+        """按车辆类别筛选（包含匹配）。"""
+        c_n = HierarchyUtil._norm(vehicle_category)
+        if not c_n:
+            return list(diagrams)
+
+        filtered: List[CircuitDiagram] = []
+        for d in diagrams:
+            if d.vehicle_category and (c_n in HierarchyUtil._norm(d.vehicle_category) or HierarchyUtil._norm(d.vehicle_category) in c_n):
+                filtered.append(d)
                 continue
-            
-            # 检查层级路径
-            for level in diagram.hierarchy_path:
-                if category_lower in level.lower():
-                    results.append(diagram)
-                    break
-        
-        return results
-    
+            if HierarchyUtil._any_contains(HierarchyUtil._diagram_text_fields(d), vehicle_category):
+                filtered.append(d)
+        return filtered
+
     @staticmethod
-    def extract_options(
-        diagrams: List[CircuitDiagram],
-        option_type: str,
-        max_options: int = 5
-    ) -> List[Dict]:
+    def get_all_levels(diagrams: Sequence[CircuitDiagram]) -> Dict[str, Set[str]]:
         """
-        从电路图列表中提取选项（用于选择题）
-        
-        Args:
-            diagrams: 电路图列表
-            option_type: 选项类型（"brand", "model", "type", "category"）
-            max_options: 最大选项数量
-            
+        汇总所有可用层级字段集合（用于fallback问题生成）。
+
         Returns:
-            选项列表，每个选项包含名称和数量
-            格式: [{"name": "选项名", "count": 数量}, ...]
-        """
-        option_counts = {}
-        
-        for diagram in diagrams:
-            value = None
-            
-            if option_type == "brand":
-                value = diagram.brand
-            elif option_type == "model":
-                value = diagram.model
-            elif option_type == "type":
-                value = diagram.diagram_type
-            elif option_type == "category":
-                value = diagram.vehicle_category
-            
-            if value:
-                option_counts[value] = option_counts.get(value, 0) + 1
-        
-        # 转换为列表并按数量排序
-        options = [
-            {"name": name, "count": count}
-            for name, count in option_counts.items()
-        ]
-        options.sort(key=lambda x: x["count"], reverse=True)
-        
-        # 限制选项数量
-        return options[:max_options]
-    
-    @staticmethod
-    def get_all_levels(diagrams: List[CircuitDiagram]) -> Dict[str, Set[str]]:
-        """
-        获取所有层级的唯一值
-        
-        Args:
-            diagrams: 电路图列表
-            
-        Returns:
-            字典，包含各层级的唯一值集合
-            格式: {
-                "brands": {"三一", "东风", ...},
-                "models": {"天龙KL", "JH6", ...},
-                "types": {"ECU电路图", ...},
-                "categories": {"工程机械", ...}
+            {
+              "brands": set(...),
+              "models": set(...),
+              "types": set(...),
+              "categories": set(...),
             }
         """
-        result = {
-            "brands": set(),
-            "models": set(),
-            "types": set(),
-            "categories": set()
-        }
-        
-        for diagram in diagrams:
-            if diagram.brand:
-                result["brands"].add(diagram.brand)
-            if diagram.model:
-                result["models"].add(diagram.model)
-            if diagram.diagram_type:
-                result["types"].add(diagram.diagram_type)
-            if diagram.vehicle_category:
-                result["categories"].add(diagram.vehicle_category)
-        
-        return result
+        brands: Set[str] = set()
+        models: Set[str] = set()
+        types: Set[str] = set()
+        categories: Set[str] = set()
 
+        for d in diagrams:
+            if d.brand:
+                brands.add(d.brand.strip())
+            if d.model:
+                models.add(d.model.strip())
+            if d.diagram_type:
+                types.add(d.diagram_type.strip())
+            if d.vehicle_category:
+                categories.add(d.vehicle_category.strip())
+
+        # 兜底：如果解析字段缺失，尝试从层级路径中补一点信息
+        if not brands or not models or not types or not categories:
+            for d in diagrams:
+                for level in d.hierarchy_path or []:
+                    lv = (level or "").replace("*", "").strip()
+                    if not lv:
+                        continue
+                    # 类型/类别/品牌的极简启发式
+                    if any(k in lv for k in ("电路图", "仪表", "ECU", "整车", "线路", "接线", "针脚")):
+                        types.add(lv)
+                    if lv in HierarchyUtil.COMMON_VEHICLE_CATEGORIES:
+                        categories.add(lv)
+                    if lv in HierarchyUtil.COMMON_BRANDS or any(cb in lv for cb in HierarchyUtil.COMPOUND_BRANDS):
+                        brands.add(lv)
+
+        return {"brands": brands, "models": models, "types": types, "categories": categories}
+
+    @staticmethod
+    def extract_options(
+        diagrams: Sequence[CircuitDiagram],
+        option_type: str,
+        max_options: int = 5,
+    ) -> List[Dict]:
+        """
+        从电路图列表中提取选项（用于选择题）。
+
+        option_type 支持：
+        - brand / model / type / category / brand_model
+
+        Returns:
+            [{"name": str, "count": int}, ...]
+        """
+        opt = (option_type or "").strip().lower()
+        if max_options <= 0:
+            return []
+
+        counts: Dict[str, int] = {}
+
+        def add(name: Optional[str]):
+            n = (name or "").replace("*", "").strip()
+            if not n:
+                return
+            counts[n] = counts.get(n, 0) + 1
+
+        for d in diagrams:
+            if opt == "brand":
+                add(d.brand)
+            elif opt == "model":
+                add(d.model)
+            elif opt in ("type", "diagram_type"):
+                add(d.diagram_type)
+            elif opt in ("category", "vehicle_category"):
+                add(d.vehicle_category)
+            elif opt in ("brand_model", "brand+model"):
+                b = (d.brand or "").strip()
+                m = (d.model or "").strip()
+                if b and m:
+                    add(f"{b} {m}")
+                elif b:
+                    add(b)
+                elif m:
+                    add(m)
+            else:
+                # 未知类型：返回空，交由上层 fallback 处理
+                return []
+
+        options = [{"name": name, "count": count} for name, count in counts.items() if name]
+        options.sort(key=lambda x: (-x["count"], x["name"]))
+        return options[:max_options]
 

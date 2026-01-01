@@ -27,6 +27,8 @@ class Config:
     # 数据文件路径
     DATA_CSV_PATH = os.getenv('DATA_CSV_PATH', '资料清单.csv')
     KEYWORDS_PATH = os.getenv('KEYWORDS_PATH', 'keywords.txt')
+    # 同义/包含词族配置（JSON文件路径，相对项目根目录）
+    SYNONYM_FAMILIES_PATH = os.getenv('SYNONYM_FAMILIES_PATH', 'synonyms.json')
     
     # LLM 调用配置
     MAX_TOKENS = int(os.getenv('MAX_TOKENS', 1500))  # 最大输出 token 数

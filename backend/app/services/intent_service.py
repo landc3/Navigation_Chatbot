@@ -32,6 +32,12 @@ class IntentService:
         "整车图": "整车电路图",
     }
     
+    # 复合品牌列表（需要优先匹配的完整品牌名称）
+    COMPOUND_BRANDS = [
+        "东风天龙", "东风乘龙", "一汽解放", "中国重汽", "上汽大通",
+        "福田欧曼", "红岩杰狮", "重汽豪瀚", "重汽豪汉"
+    ]
+    
     # 品牌列表（用于验证）
     VALID_BRANDS = HierarchyUtil.COMMON_BRANDS
     
@@ -105,8 +111,10 @@ class IntentService:
 - 如果某个字段无法确定，请设置为null
 - keywords字段应包含查询中的其他重要关键词
 - confidence表示你对解析结果的置信度（0-1之间）
+- **重要**：如果用户说"东风天龙"、"东风天龙XXX"，brand字段应该设置为"东风天龙"（完整品牌），而不是"东风"
 - 如果用户说"天龙"，应该理解为"东风天龙"品牌
 - 如果用户说"仪表图"、"仪表"，应该理解为"仪表电路图"
+- 复合品牌（如"东风天龙"、"一汽解放"）应该作为完整的brand返回，不要拆分
 """
         
         # 调用LLM
@@ -213,11 +221,21 @@ class IntentService:
         Args:
             intent_result: 意图结果对象（会被修改）
         """
+        # 首先检查原始查询中是否包含复合品牌（优先匹配）
+        raw_query = intent_result.raw_query
+        if raw_query:
+            for compound_brand in self.COMPOUND_BRANDS:
+                if compound_brand in raw_query:
+                    intent_result.brand = compound_brand
+                    break
+        
         # 应用近义词映射
         if intent_result.brand:
-            normalized_brand = self.SYNONYM_MAP.get(intent_result.brand, intent_result.brand)
-            if normalized_brand != intent_result.brand:
-                intent_result.brand = normalized_brand
+            # 如果还没有设置品牌，尝试从近义词映射中获取
+            if intent_result.brand not in self.COMPOUND_BRANDS:
+                normalized_brand = self.SYNONYM_MAP.get(intent_result.brand, intent_result.brand)
+                if normalized_brand != intent_result.brand:
+                    intent_result.brand = normalized_brand
         
         if intent_result.model:
             normalized_model = self.SYNONYM_MAP.get(intent_result.model, intent_result.model)
