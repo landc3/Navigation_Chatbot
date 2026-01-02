@@ -4,6 +4,7 @@
 """
 from typing import List, Dict, Optional, Any
 import re
+import string
 from backend.app.models.circuit_diagram import CircuitDiagram
 from backend.app.models.types import ScoredResult, rebuild_scored_result_model
 from backend.app.services.search_service import get_search_service
@@ -20,6 +21,29 @@ class QuestionService:
         """初始化问题生成服务"""
         self.search_service = get_search_service()
         self.llm_service = get_llm_service()
+
+    @staticmethod
+    def _make_option_labels(n: int) -> List[str]:
+        """
+        生成足够数量的选项标签：A..Z, AA..AZ, BA..BZ...
+        """
+        if n <= 0:
+            return []
+        letters = string.ascii_uppercase
+
+        def idx_to_label(idx: int) -> str:
+            # Excel-style column naming (0-based)
+            out = ""
+            x = idx
+            while True:
+                x, rem = divmod(x, 26)
+                out = letters[rem] + out
+                if x == 0:
+                    break
+                x -= 1
+            return out
+
+        return [idx_to_label(i) for i in range(n)]
     
     def generate_question(
         self,
@@ -200,8 +224,7 @@ class QuestionService:
                 else:
                     question_text = self._generate_question_text(option_type, len(results), context)
                 
-                option_labels = ['A', 'B', 'C', 'D', 'E']
-                
+                option_labels = self._make_option_labels(min(max_options, len(options)))
                 formatted_options = []
                 for i, option in enumerate(options[:max_options]):
                     formatted_options.append({
@@ -228,7 +251,7 @@ class QuestionService:
                 # 使用默认模板生成问题
                 question_text = self._generate_question_text("brand_model", len(results), context)
                 
-                option_labels = ['A', 'B', 'C', 'D', 'E']
+                option_labels = self._make_option_labels(min(max_options, len(fallback_options)))
                 formatted_options = []
                 for i, option in enumerate(fallback_options[:max_options]):
                     formatted_options.append({
@@ -874,10 +897,20 @@ class QuestionService:
         if not options:
             return []
         
-        # 去重：合并相似选项
+        # 去重：合并相似选项（先做轻度规范化，避免因为空格/重复“系列”导致 A/B 看起来一样）
+        def norm_name(s: str) -> str:
+            if not s:
+                return ""
+            s = str(s).strip()
+            s = re.sub(r"\s+", " ", s)
+            s = s.replace("  ", " ")
+            # collapse duplicated “系列”
+            s = re.sub(r"(系列)\s*(系列)+", r"\1", s)
+            return s.strip()
+
         merged_options = {}
         for option in options:
-            name = option['name']
+            name = norm_name(option['name'])
             count = option['count']
             
             # 检查是否有相似的选项（包含关系）

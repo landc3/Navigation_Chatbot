@@ -104,10 +104,56 @@ async def chat(request: ChatRequest):
     
     # 添加用户消息到历史
     conv_state.add_message("user", query)
+
+    # 如果上一轮是“放宽关键词后找到近似结果”的确认态，这一轮优先处理“需要/不需要”
+    if conv_state.state == ConversationStateEnum.NEEDS_CONFIRM:
+        user_confirm = (query or "").strip()
+        yes_set = {"需要", "要", "好的", "好", "是", "可以", "行", "ok", "OK"}
+        no_set = {"不需要", "不要", "不用", "否", "不", "算了"}
+
+        if user_confirm in yes_set:
+            # 关键修复：
+            # 用户回复“需要”时，必须沿用“放宽后得到的结果集”，绝不能再次跑意图识别/重新搜索
+            # 否则会把“乘龙H7电路图”扩大成“东风柳汽一堆系列”的无关集合。
+
+            # 重要：不要把 current_query 覆盖成“需要”
+            query = (conv_state.current_query or "").strip() or query
+
+            # 直接复用上一轮的放宽结果（本身就是 used_keywords 的 AND 交集）
+            scored_results = search_service.deduplicate_results(conv_state.search_results or [])
+            conv_state.search_results = scored_results
+
+            # 复用上一轮的意图（若存在），用于生成更合理的选择题上下文
+            intent_result = conv_state.intent_result
+
+            meta = conv_state.relax_meta or {}
+            used = meta.get("used_keywords") or []
+            try:
+                print(f"[DEBUG] confirm=YES, relaxed used_keywords: {used}")
+            except Exception:
+                pass
+
+            # 标记：后续不要再做意图解析/搜索，只做选择题/展示
+            skip_search = True
+            force_choose = True
+            conv_state.update_state(ConversationStateEnum.SEARCHING)
+        elif user_confirm in no_set:
+            conv_state.update_state(ConversationStateEnum.COMPLETED)
+            msg = "好的。如需继续，请直接输入新的关键词重新搜索。"
+            conv_state.add_message("assistant", msg)
+            return ChatResponse(message=msg, session_id=session_id)
+        else:
+            msg = "我可以基于已找到的相关资料继续为您筛选。请回复“需要”继续，或回复“不需要”重新搜索。"
+            conv_state.add_message("assistant", msg)
+            return ChatResponse(message=msg, session_id=session_id)
     
-    # 检查是否是选择题答案（A/B/C/D/E 或单个字母）
-    user_input_upper = query.upper().strip()
-    is_option_selection = len(user_input_upper) == 1 and user_input_upper in ['A', 'B', 'C', 'D', 'E']
+    # 检测用户是否在回答“选项标签”（支持 A..Z, AA.. 等动态扩展标签）
+    user_input_upper = (query or "").upper().strip()
+    is_option_selection = False
+    if conv_state.state == ConversationStateEnum.NEEDS_CHOICE and conv_state.current_options:
+        labels = {str(o.get("label", "")).upper().strip() for o in conv_state.current_options if o.get("label")}
+        if user_input_upper in labels:
+            is_option_selection = True
     
     # 如果当前状态是等待选择，且用户输入是选项，处理选择
     if conv_state.state == ConversationStateEnum.NEEDS_CHOICE and is_option_selection:
@@ -177,6 +223,11 @@ async def chat(request: ChatRequest):
                         filtered_results = search_service.filter_by_hierarchy(
                             filtered_results, brand=brand
                         )
+                elif option_type == "result":
+                    # 直接选择某一份资料（文件）
+                    target_id = selected_option.get("id")
+                    if target_id is not None:
+                        filtered_results = [r for r in (filtered_results or []) if r.diagram.id == target_id]
                 
                 # 更新对话状态
                 conv_state.search_results = filtered_results
@@ -336,6 +387,10 @@ async def chat(request: ChatRequest):
                     filtered_results = search_service.filter_by_hierarchy(
                         filtered_results, brand=brand
                     )
+            elif option_type == "result":
+                target_id = matched_option.get("id")
+                if target_id is not None:
+                    filtered_results = [r for r in (filtered_results or []) if r.diagram.id == target_id]
             
             conv_state.search_results = filtered_results
             conv_state.current_options = []
@@ -419,14 +474,18 @@ async def chat(request: ChatRequest):
             # 如果筛选后结果仍然>5个，继续生成选择题
             query = option_value
     
-    # 执行意图理解
-    intent_result = None
-    try:
-        intent_result = llm_service.parse_intent(query)
-        conv_state.intent_result = intent_result
-    except Exception as e:
-        print(f"⚠️ 意图理解失败: {str(e)}，使用关键词搜索")
-        # 意图理解失败时，继续使用关键词搜索
+    # 执行意图理解（确认态“需要”会跳过）
+    if "skip_search" not in locals():
+        skip_search = False
+    if "intent_result" not in locals():
+        intent_result = None
+    if not skip_search:
+        try:
+            intent_result = llm_service.parse_intent(query)
+            conv_state.intent_result = intent_result
+        except Exception as e:
+            print(f"⚠️ 意图理解失败: {str(e)}，使用关键词搜索")
+            # 意图理解失败时，继续使用关键词搜索
     
     # 更新对话状态
     conv_state.update_state(ConversationStateEnum.SEARCHING)
@@ -443,64 +502,127 @@ async def chat(request: ChatRequest):
             if hint in intent_result.brand:
                 brand_tokens.append(hint)
 
-    # 执行搜索
+    # 执行搜索（确认态“需要”会跳过这里，因为 scored_results 已经存在且 skip_search=True）
     logic = request.logic or "AND"
     max_results = request.max_results or 5
-    max_options = max_results  # 用于限制选择题选项数量
+    # 选项数量不要硬绑定 max_results：用户要求“东风天龙”这类大结果集要展示更多分类供选择
+    max_options = max(5, min(15, max_results * 3))
+    if "force_choose" not in locals():
+        force_choose = False
     
-    # 使用意图理解结果进行搜索
-    if intent_result:
-        scored_results = search_service.search_with_intent(
-            intent_result=intent_result,
-            logic=logic,
-            max_results=1000,  # 获取足够多的结果用于分析
-            use_fuzzy=True
-        )
-    else:
-        # 降级为关键词搜索
-        scored_results = search_service.search(
-            query=query,
-            logic=logic,
-            max_results=1000,
-            use_fuzzy=True
-        )
-    
-    # 如果AND逻辑无结果，尝试OR逻辑
-    # 重要：当用户输入中包含多个核心关键词时，不应自动降级为OR（会导致“只命中部分关键词”的结果混入）
-    # 仅当“核心关键词<=1”（例如只输入一个词）时，才允许AND->OR的兜底。
-    if not scored_results and logic.upper() == "AND":
-        extracted_keywords = search_service._extract_keywords(query)
-        core_kw_count = len([k for k in extracted_keywords if k and len(k.strip()) > 0])
-        allow_or_fallback = core_kw_count <= 1
-
-        if not allow_or_fallback:
-            conv_state.update_state(ConversationStateEnum.COMPLETED)
-            error_message = f"抱歉，没有找到**同时匹配**您关键词的结果（AND）。\n\n建议：\n- 检查关键词是否过于具体（如针脚图/版本号）\n- 尝试补充或替换关键词（例如：仪表图/仪表电路图）\n- 或者减少一个限定词再试"
-            conv_state.add_message("assistant", error_message)
-            return ChatResponse(
-                message=error_message,
-                session_id=session_id
-            )
-
+    if (not skip_search) and ("scored_results" not in locals()):
+        # 使用意图理解结果进行搜索
         if intent_result:
             scored_results = search_service.search_with_intent(
                 intent_result=intent_result,
-                logic="OR",
-                max_results=1000,
+                logic=logic,
+                max_results=1000,  # 获取足够多的结果用于分析
                 use_fuzzy=True
             )
         else:
+            # 降级为关键词搜索
             scored_results = search_service.search(
                 query=query,
-                logic="OR",
+                logic=logic,
                 max_results=1000,
                 use_fuzzy=True
             )
+
+    # 确认态“需要”会跳过搜索：这里确保 scored_results 一定存在，避免后续逻辑跑偏
+    if skip_search and ("scored_results" not in locals()):
+        scored_results = conv_state.search_results or []
+    
+    # 严格 AND（用户要求A）：必须在“文件名”中同时命中所有关键词组
+    strict_filename_failed = False
+    strict_removed_terms: List[str] = []
+    if logic.upper() == "AND" and scored_results and not skip_search:
+        strict_stats = search_service.strict_filename_and_stats(query=query, intent_result=intent_result)
+        if (strict_stats.get("and_count") or 0) <= 0:
+            strict_filename_failed = True
+            term_counts = strict_stats.get("term_counts") or {}
+            strict_removed_terms = [t for t, c in term_counts.items() if int(c) <= 0]
+
+    # 如果 AND 无结果（或严格文件名AND失败）：按业务规则做“逐步放宽关键词”的兜底；仅在核心关键词很少时再允许 AND->OR
+    if (not scored_results or strict_filename_failed) and logic.upper() == "AND" and not skip_search:
+        extracted_keywords = search_service._extract_keywords(query)
+        core_kw_count = len([k for k in extracted_keywords if k and len(k.strip()) > 0])
+
+        # 核心词 > 1：不直接 OR，先尝试“剔除 0 命中/不可组合关键词”的 AND 放宽策略
+        if core_kw_count > 1:
+            relaxed, meta = search_service.search_and_relax(
+                query=query,
+                max_results=1000,
+                use_fuzzy=True,
+                intent_result=intent_result,
+                force_remove_terms=strict_removed_terms if strict_filename_failed else None,
+            )
+            relaxed = search_service.deduplicate_results(relaxed)
+
+            if relaxed:
+                used = meta.get("used_keywords") or []
+                removed = meta.get("removed_keywords") or []
+                # 优先展示“严格文件名AND未命中”的关键词（更符合用户心智）
+                if strict_filename_failed and strict_removed_terms:
+                    removed = strict_removed_terms
+                # 只有“确实放宽过”才进入确认态
+                if removed:
+                    removed_txt = "、".join([str(x) for x in removed if str(x).strip()])
+                    # phrase：按用户要求A展示为 “东风天龙”“针脚” 这种格式，并尽量去掉过于泛的词
+                    generic = {"电路图", "线路图", "接线图"}
+                    phrase_terms = [str(x) for x in used if str(x).strip() and str(x) not in generic]
+                    # 如果只剩下泛词（如“线路图”），也要展示出来；否则会变成“相关”，用户会觉得很怪
+                    shown_terms = phrase_terms if phrase_terms else [str(x) for x in used if str(x).strip()]
+                    phrase = "".join([f"“{t}”" for t in shown_terms]) if shown_terms else "“相关”"
+                    msg = (
+                        "抱歉，没有找到**同时匹配**您关键词的结果（AND）。\n\n"
+                        "建议：\n"
+                        "- 检查关键词是否过于具体（如针脚图/版本号）\n"
+                        "- 尝试补充或替换关键词（例如：仪表图/仪表电路图）\n"
+                        "- 或者减少一个限定词再试\n\n"
+                        f"同时已为您扩大范围（去掉不匹配关键字{removed_txt}），"
+                        f"已为您找到“{phrase}”相关数据，是否需要？\n"
+                        "回复需要就可以进行选择逻辑"
+                    )
+                    conv_state.search_results = relaxed
+                    conv_state.relax_meta = meta
+                    conv_state.update_state(ConversationStateEnum.NEEDS_CONFIRM)
+                    conv_state.add_message("assistant", msg)
+                    return ChatResponse(message=msg, needs_choice=False, session_id=session_id)
+
+                scored_results = relaxed
+            else:
+                conv_state.update_state(ConversationStateEnum.COMPLETED)
+                error_message = (
+                    "抱歉，没有找到**同时匹配**您关键词的结果（AND）。\n\n"
+                    "建议：\n"
+                    "- 检查关键词是否过于具体（如针脚图/版本号）\n"
+                    "- 尝试补充或替换关键词（例如：仪表图/仪表电路图）\n"
+                    "- 或者减少一个限定词再试"
+                )
+                conv_state.add_message("assistant", error_message)
+                return ChatResponse(message=error_message, session_id=session_id)
+
+        # 核心词很少（<=1）：允许 AND->OR 兜底
+        if not scored_results:
+            if intent_result:
+                scored_results = search_service.search_with_intent(
+                    intent_result=intent_result,
+                    logic="OR",
+                    max_results=1000,
+                    use_fuzzy=True
+                )
+            else:
+                scored_results = search_service.search(
+                    query=query,
+                    logic="OR",
+                    max_results=1000,
+                    use_fuzzy=True
+                )
     
     # 去重
     scored_results = search_service.deduplicate_results(scored_results)
 
-    # 如果用户已经明确品牌/类型，先进行强过滤，避免出现无关选项
+    # 如果用户已经明确品牌/类型，优先过滤，但过滤为空时不要直接报错（避免“其实搜到了但被字段过滤清空”）
     if intent_result and (brand_already_specified or type_already_specified):
         filtered_results = search_service.filter_by_hierarchy(
             scored_results,
@@ -510,33 +632,41 @@ async def chat(request: ChatRequest):
         if filtered_results:
             scored_results = filtered_results
         else:
-            conv_state.update_state(ConversationStateEnum.COMPLETED)
-            error_message = f"抱歉，没有找到同时匹配「{intent_result.brand or ''}」和「{intent_result.diagram_type or ''}」的电路图。请确认关键词或提供更多信息。"
-            conv_state.add_message("assistant", error_message)
-            return ChatResponse(
-                message=error_message,
-                session_id=session_id
-            )
+            # 退一步：品牌/类型分别尝试，能保留多少保留多少
+            alt = []
+            if brand_already_specified and intent_result.brand:
+                alt = search_service.filter_by_hierarchy(scored_results, brand=intent_result.brand)
+            if not alt and type_already_specified and intent_result.diagram_type:
+                alt = search_service.filter_by_hierarchy(scored_results, diagram_type=intent_result.diagram_type)
+            if alt:
+                scored_results = alt
     
     # 更新对话状态中的搜索结果
     conv_state.search_results = scored_results
     
     if not scored_results:
         conv_state.update_state(ConversationStateEnum.COMPLETED)
-        error_message = f"抱歉，没有找到与「{query}」相关的电路图。\n\n建议：\n1. 尝试使用其他关键词\n2. 检查拼写是否正确\n3. 尝试使用更通用的关键词（如品牌名称）"
-        conv_state.add_message("assistant", error_message)
-        return ChatResponse(
-            message=error_message,
-            session_id=session_id
+        error_message = (
+            "抱歉，没有找到**同时匹配**您关键词的结果（AND）。\n\n"
+            "建议：\n"
+            "- 检查关键词是否过于具体（如针脚图/版本号）\n"
+            "- 尝试补充或替换关键词（例如：仪表图/仪表电路图）\n"
+            "- 或者减少一个限定词再试"
         )
+        conv_state.add_message("assistant", error_message)
+        return ChatResponse(message=error_message, session_id=session_id)
     
     total_found = len(scored_results)
     
     print(f"🔍 搜索结果: {total_found} 个，max_results: {max_results}")
     
-    # 如果结果超过5个，尝试生成选择题引导用户缩小范围
+    # 对“针脚/针角”这类查询，即使结果较少，也强制走选择题（避免直接吐 5 条）
+    if (not force_choose) and re.search(r"(针脚|针角)", conv_state.current_query or "") and total_found >= 2:
+        force_choose = True
+
+    # 如果结果超过5个，或强制选择，尝试生成选择题引导用户缩小范围
     # 重要：当结果>5个时，必须生成选择题，不能直接返回结果
-    if total_found > max_results:
+    if force_choose or total_found > max_results:
         print(f"✅ 结果数({total_found}) > max_results({max_results})，进入选择题生成逻辑")
         
         # 如果意图理解识别到了品牌和类型，将它们添加到筛选历史（用于指导选择题生成）
@@ -571,15 +701,36 @@ async def chat(request: ChatRequest):
             } if intent_result else None
         }
         
-        # 生成选择题（使用LLM生成自然的问题文本）
-        question_data = question_service.generate_question(
-            scored_results,
-            min_options=2,
-            max_options=max_options,
-            excluded_types=excluded_types if excluded_types else None,
-            context=context,
-            use_llm=True
-        )
+        # 若结果数不大：直接让用户“按文件名精确选择”（比按品牌/型号分组更精确）
+        question_data = None
+        choose_file_threshold = max(max_results, 15)
+        if force_choose and total_found <= choose_file_threshold:
+            # 选项标签按需扩展，避免 max_results > 5 时越界
+            option_labels = question_service._make_option_labels(min(choose_file_threshold, len(scored_results)))
+            formatted_options = []
+            for i, r in enumerate(scored_results[:choose_file_threshold]):
+                formatted_options.append({
+                    "label": option_labels[i],
+                    "name": r.diagram.file_name,
+                    "count": 1,
+                    "type": "result",
+                    "id": r.diagram.id,
+                })
+            question_data = {
+                "question": "明白了。请问您需要的是哪一份资料：",
+                "options": formatted_options,
+                "option_type": "result",
+            }
+        else:
+            # 生成选择题（使用LLM生成自然的问题文本）
+            question_data = question_service.generate_question(
+                scored_results,
+                min_options=2,
+                max_options=max_options,
+                excluded_types=excluded_types if excluded_types else None,
+                context=context,
+                use_llm=True
+            )
         
         print(f"🔍 question_data: {question_data is not None}")
         
