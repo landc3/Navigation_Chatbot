@@ -4,11 +4,12 @@ LLM服务模块
 """
 import json
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import dashscope
 from dashscope import Generation
 from config import Config
 from backend.app.models.intent import IntentResult
+from backend.app.utils.hierarchy_util import HierarchyUtil
 
 
 class LLMService:
@@ -239,6 +240,20 @@ class LLMService:
             diagram_type = intent_dict.get("diagram_type")
             if diagram_type:
                 diagram_type = self.apply_synonyms(diagram_type)
+
+            # --- Guardrail: sanitize/validate diagram_type extracted by LLM ---
+            # Some LLM responses mistakenly put the whole query into diagram_type
+            # (e.g. "VGT线路图"). This later triggers hierarchy filtering and
+            # can incorrectly drop valid matches.
+            keywords_from_llm = intent_dict.get("keywords", []) or []
+            diagram_type, keywords_from_type = self._sanitize_diagram_type(diagram_type, user_query.strip())
+            # merge back to keywords
+            merged_keywords = []
+            for x in list(keywords_from_llm) + list(keywords_from_type):
+                s = (str(x) or "").strip()
+                if not s:
+                    continue
+                merged_keywords.append(s)
             
             # 构建IntentResult
             intent_result = IntentResult(
@@ -246,7 +261,7 @@ class LLMService:
                 model=intent_dict.get("model") if intent_dict.get("model") and intent_dict.get("model").lower() != "null" else None,
                 diagram_type=diagram_type if diagram_type and diagram_type.lower() != "null" else None,
                 vehicle_category=intent_dict.get("vehicle_category") if intent_dict.get("vehicle_category") and intent_dict.get("vehicle_category").lower() != "null" else None,
-                keywords=intent_dict.get("keywords", []),
+                keywords=merged_keywords,
                 original_query=user_query.strip(),
                 confidence=float(intent_dict.get("confidence", 0.5))
             )
@@ -261,6 +276,52 @@ class LLMService:
                 keywords=[user_query.strip()],
                 confidence=0.0
             )
+
+    @staticmethod
+    def _sanitize_diagram_type(diagram_type: Optional[str], user_query: str) -> tuple[Optional[str], List[str]]:
+        """
+        Validate/normalize diagram_type.
+
+        - Only accept known diagram types (or a known type substring within the extracted value).
+        - If the extracted value contains extra tokens (e.g. "VGT线路图"), extract the known type
+          and return the remaining tokens as extra keywords.
+        """
+        if not diagram_type:
+            return None, []
+
+        dt_raw = str(diagram_type).strip()
+        if not dt_raw:
+            return None, []
+
+        # Known types (include synonym-family roots; keep longest-first matching)
+        candidates = list(dict.fromkeys(HierarchyUtil.COMMON_DIAGRAM_TYPES))
+        candidates.sort(key=len, reverse=True)
+
+        # If LLM returns the whole query or an overly long string, try to extract a known type.
+        extra_keywords: List[str] = []
+        best = None
+        for c in candidates:
+            if c and c in dt_raw:
+                best = c
+                break
+        if best is None:
+            # also try in user query (sometimes dt_raw is garbage encoding)
+            for c in candidates:
+                if c and c in (user_query or ""):
+                    best = c
+                    break
+
+        if best is not None:
+            # Anything besides the best type is treated as keyword
+            rest = dt_raw.replace(best, " ").strip()
+            # Extract short uppercase/number codes like VGT/KL/C81 from the remaining string
+            for m in re.findall(r"[A-Z]{2,5}\d{0,4}", (rest or "").upper()):
+                if m and m not in extra_keywords:
+                    extra_keywords.append(m)
+            return best, extra_keywords
+
+        # If it's not a known type, drop it. (Avoid later hierarchy filtering.)
+        return None, []
     
     def build_question_prompt(
         self,

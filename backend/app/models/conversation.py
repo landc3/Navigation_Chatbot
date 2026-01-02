@@ -15,6 +15,7 @@ class ConversationStateEnum(str, Enum):
     INITIAL = "initial"           # 初始状态
     SEARCHING = "searching"       # 搜索中
     NEEDS_CHOICE = "needs_choice"  # 等待用户选择
+    NEEDS_CONFIRM = "needs_confirm"  # 需要用户确认（例如：已放宽关键词找到近似结果）
     FILTERING = "filtering"       # 筛选中
     COMPLETED = "completed"       # 已完成
 
@@ -63,6 +64,11 @@ class ConversationState(BaseModel):
         None, 
         description="意图理解结果",
         exclude=True  # 排除序列化
+    )
+    relax_meta: Optional[Dict[str, Any]] = Field(
+        None,
+        description="放宽搜索元信息（用于确认/调试）",
+        exclude=True,
     )
     
     def add_message(self, role: str, content: str):

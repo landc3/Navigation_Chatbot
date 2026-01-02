@@ -30,7 +30,10 @@ class SearchService:
         "整车图": ["整车图", "整车电路图", "整车线路图"],
         "线路图": ["线路图", "电路图"],
         "接线图": ["接线图", "接线定义图", "接线盒定义图", "电路图"],
-        "针脚图": ["针脚图", "针角图", "针脚定义图", "ECU针脚图"],
+        # “针脚图”应当更严格：不要自动把“针脚定义/针脚”都算作“针脚图”的命中（否则会误判首轮 AND 命中）
+        "针脚图": ["针脚图", "针角图"],
+        # allow splitting keyword like “针脚” / typo “针角”
+        "针脚": ["针脚", "针角", "针脚图", "针角图", "针脚定义图", "针脚定义", "ECU针脚图"],
     }
 
     # 常见符号/分隔符：匹配时会被移除，确保 “仪表_电路图”≈“仪表电路图”
@@ -63,11 +66,32 @@ class SearchService:
         custom_words = [
             "东风天龙", "东风乘龙", "一汽解放", "中国重汽", "上汽大通",
             "福田欧曼", "红岩杰狮", "重汽豪瀚", "重汽豪汉",
+            "重汽豪沃", "豪沃",
             "仪表图", "仪表电路图", "ECU图", "ECU电路图",
-            "整车图", "整车电路图", "线路图", "接线图", "针脚图"
+            "整车图", "整车电路图", "线路图", "接线图", "针脚图", "针角图",
+            "国一", "国二", "国三", "国四", "国五", "国六", "国七", "国八",
         ]
         for word in custom_words:
             jieba.add_word(word, freq=1000)  # 设置高频率，确保优先匹配
+        # 词族快速索引：把“任何族成员”映射回该词族，避免用“包含匹配”造成过度扩展
+        self._synonym_member_lookup: Dict[str, List[str]] = {}
+        self._rebuild_synonym_lookup()
+
+    def _rebuild_synonym_lookup(self) -> None:
+        lookup: Dict[str, List[str]] = {}
+        for _, fam in (self.synonym_families or {}).items():
+            if not isinstance(fam, list):
+                continue
+            fam_list = [str(x) for x in fam if str(x).strip()]
+            for member in fam_list:
+                mn = self._norm_text(member)
+                if not mn:
+                    continue
+                # If a member appears in multiple families, keep the first (more specific) one.
+                # This prevents broad families like “针脚” from overriding the stricter “针脚图” family.
+                if mn not in lookup:
+                    lookup[mn] = fam_list
+        self._synonym_member_lookup = lookup
 
     @classmethod
     def _norm_text(cls, s: str) -> str:
@@ -99,11 +123,8 @@ class SearchService:
         """对上位词做词族扩展；默认返回 [term]。"""
         if not term:
             return []
-        # 精确命中映射 key 或者 term 本身包含 key 时，都视为该词族
-        variants: List[str] = []
-        for k, fam in self.synonym_families.items():
-            if k in term or term in k:
-                variants.extend(fam)
+        tn = self._norm_text(term)
+        variants = self._synonym_member_lookup.get(tn)
         if not variants:
             variants = [term]
         # 去重保持顺序
@@ -127,16 +148,19 @@ class SearchService:
         Returns:
             关键词列表
         """
+        # 轻度纠错（不影响原文展示，仅用于匹配）
+        query = (query or "").replace("上气大通", "上汽大通")
+
         # 定义复合品牌列表（需要作为整体保留）
         compound_brands = [
             "东风天龙", "东风乘龙", "一汽解放", "中国重汽", "上汽大通",
-            "福田欧曼", "红岩杰狮", "重汽豪瀚", "重汽豪汉"
+            "福田欧曼", "红岩杰狮", "重汽豪瀚", "重汽豪汉", "重汽豪沃"
         ]
         
         # 定义类型关键词（需要作为整体保留）
         type_keywords = [
             "仪表图", "仪表电路图", "ECU图", "ECU电路图", 
-            "整车图", "整车电路图", "线路图", "接线图", "针脚图"
+            "整车图", "整车电路图", "线路图", "接线图", "针脚图", "针角图"
         ]
         
         # 停用词列表（需要过滤的词）
@@ -144,6 +168,14 @@ class SearchService:
         
         # 先做轻度规范化（仅用于检测复合词；不影响最终返回的关键词文本）
         query_for_detect = unicodedata.normalize("NFKC", query or "")
+        # 把 “国六/国5/国Ⅵ”等作为可拆分关键词，避免被粘连到前一个词
+        # 例：豪沃国六 -> 豪沃 国六
+        # 注意：这里必须用 \d（不要写成 \\d），否则会匹配字面量“\d”导致国6/国12无法拆分。
+        query_for_detect = re.sub(
+            r"(国[一二三四五六七八九十]|国\d{1,2}|国[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)",
+            r" \1 ",
+            query_for_detect,
+        )
         # 将常见分隔符替换为空格，避免“东风_天龙”检测失败
         query_for_detect = self._NORMALIZE_SEP_RE.sub(" ", query_for_detect)
 
@@ -155,7 +187,12 @@ class SearchService:
         sorted_brands = sorted(compound_brands, key=len, reverse=True)
         for brand in sorted_brands:
             if brand in remaining_query:
-                extracted_keywords.append(brand)
+                # “重汽豪沃”在业务上更希望拆成两个可独立组合的关键词：重汽 + 豪沃
+                if brand == "重汽豪沃":
+                    extracted_keywords.append("重汽")
+                    extracted_keywords.append("豪沃")
+                else:
+                    extracted_keywords.append(brand)
                 remaining_query = remaining_query.replace(brand, " ", 1)
         
         # 提取类型关键词（按长度从长到短排序，优先匹配更长的类型）
@@ -164,6 +201,23 @@ class SearchService:
             if type_keyword in remaining_query:
                 extracted_keywords.append(type_keyword)
                 remaining_query = remaining_query.replace(type_keyword, " ", 1)
+
+        # 特殊：把“仪表针脚图/仪表针角图”拆成两个可组合关键词：仪表 + 针脚
+        if ("仪表" in query_for_detect) and ("针脚" in query_for_detect or "针角" in query_for_detect):
+            # 若用户显式说“针脚图/针角图”，优先保留更强约束的“针脚图”（否则首轮 AND 往往会误召回“针脚定义”类资料）
+            has_pin_diagram = ("针脚图" in query_for_detect) or ("针角图" in query_for_detect)
+            pin_term = "针脚图" if has_pin_diagram else "针脚"
+            if not any("仪表" in k for k in extracted_keywords):
+                extracted_keywords.append("仪表")
+            # 只加入一个 pin_term，避免出现 “针脚 + 针脚图” 同时作为 AND 组导致过严
+            if pin_term not in extracted_keywords and not any(("针脚" in k or "针角" in k) for k in extracted_keywords):
+                extracted_keywords.append(pin_term)
+            # 避免剩余 query 再切出重复词
+            remaining_query = remaining_query.replace("仪表", " ")
+            remaining_query = remaining_query.replace("针脚", " ")
+            remaining_query = remaining_query.replace("针角", " ")
+            remaining_query = remaining_query.replace("针脚图", " ")
+            remaining_query = remaining_query.replace("针角图", " ")
         
         # 对剩余部分使用jieba分词
         words = jieba.cut(remaining_query)
@@ -183,13 +237,399 @@ class SearchService:
             kw_clean = kw.strip()
             if kw_clean and kw_clean not in seen:
                 seen.add(kw_clean)
+                # 轻度归一：针角 -> 针脚
+                if kw_clean == "针角":
+                    kw_clean = "针脚"
+                if kw_clean == "针角图":
+                    kw_clean = "针脚图"
                 keywords.append(kw_clean)
         
         # 如果提取到了关键词，返回；否则返回原始查询
         result = keywords if keywords else [query.strip()]
-        # NOTE: Avoid emojis in logs; on Windows GBK console they can trigger UnicodeEncodeError.
-        print(f"[DEBUG] _extract_keywords input: '{query}' -> output: {result}")
+        # NOTE: On Windows GBK console, some characters can trigger UnicodeEncodeError.
+        # Keep debug logging best-effort and never crash the search pipeline.
+        try:
+            print(f"[DEBUG] _extract_keywords input: '{query}' -> output: {result}")
+        except Exception:
+            try:
+                q2 = (query or "").encode("utf-8", "ignore").decode("utf-8", "ignore")
+                r2 = str(result).encode("utf-8", "ignore").decode("utf-8", "ignore")
+                print(f"[DEBUG] _extract_keywords input: '{q2}' -> output: {r2}")
+            except Exception:
+                pass
         return result
+
+    def search_and_relax(
+        self,
+        query: str,
+        max_results: int = 5,
+        use_fuzzy: bool = True,
+        intent_result: Optional[IntentResult] = None,
+        force_remove_terms: Optional[List[str]] = None,
+    ) -> tuple[List[ScoredResult], Dict[str, object]]:
+        """
+        AND 搜索兜底策略（按业务规则“逐步放宽”）：
+        - 先剔除命中数为 0 的关键词
+        - 若仍无结果：
+          - 当关键词数 > 3：优先剔除“与其他关键词可组合数最少”的关键词（0 优先）
+          - 否则：从末尾关键词开始依次剔除
+        返回 (results, meta)，meta 用于上层生成更友好的提示/确认话术。
+        """
+        if not query or not query.strip():
+            return [], {"original_keywords": [], "used_keywords": [], "removed_keywords": []}
+
+        original_query = query.strip()
+        if intent_result:
+            search_query = intent_result.get_search_query()
+            if search_query and search_query.strip():
+                query = search_query.strip()
+            if intent_result.original_query:
+                original_query = intent_result.original_query.strip()
+
+        # 关键词提取：优先用原始查询
+        keywords = self._extract_keywords(original_query) or self._extract_keywords(query.strip())
+
+        # 去重（按规范化后）
+        seen_kw = set()
+        unique_keywords: List[str] = []
+        for kw in keywords:
+            n = self._norm_text(kw)
+            if not n or n in seen_kw:
+                continue
+            seen_kw.add(n)
+            unique_keywords.append(kw.strip())
+        keywords = unique_keywords
+
+        # 品牌兜底注入（与 search() 一致）
+        if intent_result and intent_result.brand:
+            brand_keyword = intent_result.brand
+            # 关键修复：仅当用户原文显式出现品牌（或其简称）时，才把 brand 注入为硬关键词。
+            # 否则 LLM 推断品牌（如 JH6 -> 解放）会导致误召回/漏召回。
+            raw_q = original_query or ""
+            explicit = False
+            if brand_keyword and brand_keyword in raw_q:
+                explicit = True
+            else:
+                hints = ["东风", "解放", "重汽", "中国重汽", "一汽", "上汽", "大通", "欧曼", "乘龙", "红岩", "杰狮", "豪瀚", "豪汉", "豪沃", "福田"]
+                for h in hints:
+                    if h and brand_keyword and (h in brand_keyword) and (h in raw_q):
+                        explicit = True
+                        break
+            if explicit:
+                brand_norm = self._norm_text(brand_keyword)
+                if brand_norm and all(brand_norm not in self._norm_text(k) and self._norm_text(k) not in brand_norm for k in keywords):
+                    keywords.insert(0, brand_keyword)
+
+        # 类型兜底注入（比 search() 更保守：ECU 不在原文里就不注入）
+        if intent_result and intent_result.diagram_type:
+            raw_q = original_query or ""
+            type_keyword = intent_result.diagram_type
+            # ECU 类型：必须显式出现 ECU 才允许注入
+            if "ECU" in (type_keyword or "").upper() and "ECU" not in raw_q.upper():
+                pass
+            else:
+                type_norm = self._norm_text(type_keyword)
+                has_type_keyword = any(type_norm and (type_norm in self._norm_text(k) or self._norm_text(k) in type_norm) for k in keywords)
+                if not has_type_keyword:
+                    # 仪表类：注入上位词“仪表图”，避免过细类型导致 AND 过严
+                    if "仪表" in (type_keyword or ""):
+                        keywords.append("仪表图")
+                    else:
+                        keywords.append(type_keyword)
+
+        if not keywords:
+            return [], {"original_keywords": [], "used_keywords": [], "removed_keywords": []}
+
+        all_diagrams = self.data_loader.get_all()
+        id_to_diagram = {d.id: d for d in all_diagrams}
+
+        # term_groups（每个 term 是一个 AND 组；组内 variants 视为 OR）
+        term_groups: List[Dict[str, List[str]]] = []
+        for kw in keywords:
+            term_groups.append({"term": kw, "variants": self._expand_term_variants(kw)})
+
+        # 预计算：term -> matched ids；以及每个 diagram 对每个 term 的 best_score（用于快速重算子集 AND 分数）
+        term_to_ids: Dict[str, set] = {g["term"]: set() for g in term_groups}
+        diagram_term_best: Dict[int, Dict[str, float]] = {}
+
+        for diagram in all_diagrams:
+            did = diagram.id
+            for group in term_groups:
+                term = group["term"]
+                best_score = 0.0
+                matched_any = False
+                for v in group["variants"]:
+                    matched, score = self._match_keyword(diagram, v, use_fuzzy)
+                    if matched:
+                        matched_any = True
+                        if score > best_score:
+                            best_score = score
+                if matched_any:
+                    term_to_ids[term].add(did)
+                    diagram_term_best.setdefault(did, {})[term] = best_score
+
+        def _ensure_term_computed(term: str) -> None:
+            """
+            When we introduce a new term during relaxation (e.g. replace 针脚图 -> 针脚),
+            we must compute its matched-id set and best-scores, otherwise intersections will be empty
+            and the term will be incorrectly dropped later.
+            """
+            if not term or term in term_to_ids:
+                return
+            term_to_ids[term] = set()
+            variants = self._expand_term_variants(term)
+            for diagram in all_diagrams:
+                did = diagram.id
+                best_score = 0.0
+                matched_any = False
+                for v in variants:
+                    matched, score = self._match_keyword(diagram, v, use_fuzzy)
+                    if matched:
+                        matched_any = True
+                        if score > best_score:
+                            best_score = score
+                if matched_any:
+                    term_to_ids[term].add(did)
+                    diagram_term_best.setdefault(did, {})[term] = best_score
+
+        def intersect_ids(terms: List[str]) -> set:
+            if not terms:
+                return set()
+            s = None
+            for t in terms:
+                ids = term_to_ids.get(t, set())
+                s = ids if s is None else (s & ids)
+                if not s:
+                    return set()
+            return s or set()
+
+        original_terms = [g["term"] for g in term_groups]
+        remaining = list(original_terms)
+        removed: List[str] = []
+
+        # 1) 剔除 0 命中关键词（带“智能替换”：针脚图/针角图 0 命中时，用更宽的“针脚”替换）
+        replaced: Dict[str, str] = {}
+        zero_terms = [t for t in remaining if len(term_to_ids.get(t, set())) == 0]
+        # Also allow caller to force-remove certain terms (e.g. strict filename AND says a term never appears in file_name)
+        if force_remove_terms:
+            for t in force_remove_terms:
+                if t and t in remaining and t not in zero_terms:
+                    zero_terms.append(t)
+        if zero_terms:
+            new_remaining: List[str] = []
+            for t in remaining:
+                if t not in zero_terms:
+                    new_remaining.append(t)
+                    continue
+                # record removal
+                removed.append(t)
+                # smart replace
+                if t in ("针脚图", "针角图"):
+                    repl = "针脚"
+                    _ensure_term_computed(repl)
+                    if repl not in new_remaining:
+                        new_remaining.append(repl)
+                    replaced[t] = repl
+            remaining = new_remaining
+
+        hit_ids = intersect_ids(remaining)
+
+        # 2) 逐步放宽直到有命中或只剩 1 个关键词
+        while not hit_ids and len(remaining) > 1:
+            # --- term importance / protection ---
+            # Protect brand/model-like terms from being dropped too early; drop generic terms first.
+            brand_hints = [
+                "东风", "解放", "重汽", "中国重汽", "上汽", "上汽大通", "大通", "福田", "欧曼", "红岩", "杰狮",
+                "乘龙", "天龙", "豪沃", "豪瀚", "豪汉",
+            ]
+            generic_terms = {
+                "电路图", "线路图", "接线图", "整车图", "整车电路图", "仪表图", "仪表电路图", "ECU图", "ECU电路图",
+                "针脚图", "针角图",
+            }
+            def is_model_like(t: str) -> bool:
+                tt = (t or "").strip()
+                # model/codes are typically uppercase alphanum like H7/V80/JH6/EDC17C81...
+                # Avoid protecting generic test tokens like "term1" by requiring at least one uppercase letter.
+                if not tt or not re.search(r"\d", tt) or not re.search(r"[A-Za-z]", tt):
+                    return False
+                if not re.search(r"[A-Z]", tt):
+                    return False
+                return bool(re.fullmatch(r"[A-Z]{1,6}\d{1,4}[A-Z0-9]{0,6}", tt))
+
+            def is_series_code(t: str) -> bool:
+                """
+                保护类似 “KL/KC/VGT” 这种短大写系列码，避免在 AND 放宽时被错误剔除。
+                """
+                tt = (t or "").strip()
+                if not tt:
+                    return False
+                up = tt.upper()
+                # 常见系统缩写不保护（否则会误导放宽策略）
+                excluded_acronyms = {
+                    "ECU", "VEC", "VECU", "BCM", "ABS", "ESP", "TCS", "EBD",
+                    "DOC", "DCI", "DCM", "EDC", "LNG", "UDS", "OBD", "CAN", "LIN",
+                }
+                if up in excluded_acronyms:
+                    return False
+                if tt in generic_terms:
+                    return False
+                return bool(re.fullmatch(r"[A-Z]{2,5}", up))
+
+            protected = set()
+            for t in remaining:
+                if any(h in t for h in brand_hints) or is_model_like(t) or is_series_code(t):
+                    protected.add(t)
+
+            def pick_from_tail_prefer_generic() -> str | None:
+                # 先剔除 generic（如“线路图/电路图”），更符合用户心智：型号/系列码通常是核心信息
+                for t in reversed(remaining):
+                    if t in generic_terms and t not in protected:
+                        return t
+                for t in reversed(remaining):
+                    if t not in protected:
+                        return t
+                return None
+
+            def pick_from_tail_non_protected() -> str | None:
+                for t in reversed(remaining):
+                    if t not in protected and t not in generic_terms:
+                        return t
+                for t in reversed(remaining):
+                    if t not in protected:
+                        return t
+                return None
+
+            if len(remaining) > 3:
+                # 计算“可组合度”：能与多少个其他关键词组成非空交集
+                combo_counts: Dict[str, int] = {}
+                for i, ti in enumerate(remaining):
+                    c = 0
+                    ids_i = term_to_ids.get(ti, set())
+                    for j, tj in enumerate(remaining):
+                        if i == j:
+                            continue
+                        if ids_i and (ids_i & term_to_ids.get(tj, set())):
+                            c += 1
+                    combo_counts[ti] = c
+                # 选 combo 最小的剔除；并列则从末尾开始剔除
+                min_combo = min(combo_counts.values()) if combo_counts else 0
+                candidates = [t for t in remaining if combo_counts.get(t, 0) == min_combo]
+                # 优先剔除 generic，再剔除非 protected
+                generic_candidates = [t for t in candidates if t in generic_terms]
+                non_protected_candidates = [t for t in candidates if t not in protected]
+                if generic_candidates:
+                    drop = next((t for t in reversed(remaining) if t in set(generic_candidates)), generic_candidates[-1])
+                elif non_protected_candidates:
+                    drop = next((t for t in reversed(remaining) if t in set(non_protected_candidates)), non_protected_candidates[-1])
+                else:
+                    # all protected: fallback to tail
+                    drop = remaining[-1]
+            else:
+                # <=3：从末尾开始剔除
+                drop = pick_from_tail_prefer_generic() or remaining[-1]
+
+            remaining = [t for t in remaining if t != drop]
+            removed.append(drop)
+            hit_ids = intersect_ids(remaining)
+
+        # 组装结果
+        results: List[ScoredResult] = []
+        if hit_ids:
+            for did in hit_ids:
+                d = id_to_diagram.get(did)
+                if not d:
+                    continue
+                score = 0.0
+                bests = diagram_term_best.get(did, {})
+                for t in remaining:
+                    score += float(bests.get(t, 0.0))
+                results.append(ScoredResult(diagram=d, score=score))
+            if intent_result:
+                results = self._adjust_scores_by_intent(results, intent_result)
+            results.sort(key=lambda x: x.score, reverse=True)
+            if max_results < len(results):
+                results = results[:max_results]
+
+        meta: Dict[str, object] = {
+            "original_keywords": original_terms,
+            "used_keywords": remaining,
+            "removed_keywords": removed,
+            "zero_hit_keywords": zero_terms,
+            "replaced_keywords": replaced,
+        }
+        return results, meta
+
+    def strict_filename_and_stats(
+        self,
+        query: str,
+        intent_result: Optional[IntentResult] = None,
+    ) -> Dict[str, object]:
+        """
+        Strict AND definition (per user requirement A):
+        - A term-group is considered matched ONLY if it matches within diagram.file_name (normalized).
+        - AND means all term-groups must match in file_name.
+
+        Returns:
+            {
+              "terms": [...],
+              "term_counts": {term: count_of_diagrams_matching_term_in_filename},
+              "and_count": count_of_diagrams_matching_all_terms_in_filename,
+              "and_ids": [...],
+            }
+        """
+        if not query or not query.strip():
+            return {"terms": [], "term_counts": {}, "and_count": 0, "and_ids": []}
+
+        # IMPORTANT: strict gating should use user-visible query only; do NOT inject extra terms from intent_result
+        original_query = query.strip()
+        keywords = self._extract_keywords(original_query)
+
+        # dedupe
+        seen = set()
+        unique: List[str] = []
+        for kw in keywords:
+            n = self._norm_text(kw)
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            unique.append(kw.strip())
+        keywords = unique
+
+        if not keywords:
+            return {"terms": [], "term_counts": {}, "and_count": 0, "and_ids": []}
+
+        term_groups = [{"term": kw, "variants": self._expand_term_variants(kw)} for kw in keywords]
+        terms = [g["term"] for g in term_groups]
+        term_counts: Dict[str, int] = {t: 0 for t in terms}
+        and_ids: List[int] = []
+
+        all_diagrams = self.data_loader.get_all()
+        for d in all_diagrams:
+            fn_norm = self._norm_text(d.file_name or "")
+            if not fn_norm:
+                continue
+            ok_all = True
+            for g in term_groups:
+                term = g["term"]
+                matched = False
+                for v in g["variants"]:
+                    vn = self._norm_text(v)
+                    if vn and vn in fn_norm:
+                        matched = True
+                        break
+                if matched:
+                    term_counts[term] = term_counts.get(term, 0) + 1
+                else:
+                    ok_all = False
+            if ok_all:
+                and_ids.append(d.id)
+
+        return {
+            "terms": terms,
+            "term_counts": term_counts,
+            "and_count": len(and_ids),
+            "and_ids": and_ids,
+        }
     
     def _calculate_match_score(
         self,
@@ -319,7 +759,8 @@ class SearchService:
             "福田欧曼": ["福田欧曼", "欧曼"],
             "红岩杰狮": ["红岩杰狮", "杰狮"],
             "重汽豪瀚": ["重汽豪瀚", "豪瀚"],
-            "重汽豪汉": ["重汽豪汉", "豪汉"]
+            "重汽豪汉": ["重汽豪汉", "豪汉"],
+            "重汽豪沃": ["重汽豪沃", "豪沃"],
         }
         
         # 检查是否是复合品牌关键词
@@ -538,42 +979,68 @@ class SearchService:
         keywords = unique_keywords
         print(f"[DEBUG] deduped keywords: {keywords}")
         
-        # 如果意图理解返回了类型信息，确保包含类型关键词
-        # 但要注意：如果已经提取到了"仪表图"，就不需要再添加"仪表电路图"了
+        # 如果意图理解返回了类型信息，谨慎注入类型关键词：
+        # 仅当用户在原始查询里显式提到类型（如 ECU/仪表/整车/针脚图 等）才注入，
+        # 避免像“电脑版针角图”被错误塞入“ECU电路图”导致 AND 过严。
         if intent_result and intent_result.diagram_type:
-            type_keyword = intent_result.diagram_type
-            # 检查关键词列表中是否已经包含类型相关的关键词
-            has_type_keyword = False
-            for kw in keywords:
-                kw_lower = kw.lower()
-                # 如果关键词中包含"仪表图"，或者类型关键词包含在关键词中，认为已经匹配
-                if "仪表图" in kw_lower or type_keyword.lower() in kw_lower or kw_lower in type_keyword.lower():
-                    has_type_keyword = True
-                    break
-            
-            # 如果没有类型关键词，添加"仪表图"（优先）或类型关键词
-            if not has_type_keyword:
-                # 如果类型是"仪表电路图"，添加"仪表图"（更通用）
-                if "仪表电路图" in type_keyword or "仪表" in type_keyword:
-                    keywords.append("仪表图")
-                else:
-                    keywords.append(type_keyword)
+            raw_q = original_query or ""
+            explicit_type = any(
+                t in raw_q
+                for t in (
+                    "ECU", "ECU图", "ECU电路图",
+                    "仪表", "仪表图", "仪表电路图",
+                    "整车图", "整车电路图",
+                    "针脚图", "针角图", "针脚",
+                    "接线图", "线路图",
+                )
+            )
+            if explicit_type:
+                type_keyword = intent_result.diagram_type
+                # ECU 类型：必须在原始查询里显式出现 ECU 才允许注入（避免“电脑版/针角”被误判成 ECU）
+                if "ECU" in (type_keyword or "").upper() and "ECU" not in raw_q.upper():
+                    type_keyword = None
+                has_type_keyword = False
+                if type_keyword:
+                    for kw in keywords:
+                        kw_lower = kw.lower()
+                        if "仪表图" in kw_lower or type_keyword.lower() in kw_lower or kw_lower in type_keyword.lower():
+                            has_type_keyword = True
+                            break
+                    if not has_type_keyword:
+                        if "仪表电路图" in type_keyword or "仪表" in type_keyword:
+                            keywords.append("仪表图")
+                        else:
+                            keywords.append(type_keyword)
         
         # 如果意图理解返回了品牌信息，确保包含品牌关键词
         if intent_result and intent_result.brand:
             brand_keyword = intent_result.brand
+            # 关键修复：若品牌并未在用户原始输入中显式出现（LLM 可能根据型号推断品牌），
+            # 则不要把 brand 当作硬关键词注入，否则会导致误召回/漏召回。
+            raw_q = original_query or ""
+            explicit = False
+            if brand_keyword and brand_keyword in raw_q:
+                explicit = True
+            else:
+                hints = ["东风", "解放", "重汽", "中国重汽", "一汽", "上汽", "大通", "欧曼", "乘龙", "红岩", "杰狮", "豪瀚", "豪汉", "豪沃", "福田"]
+                for h in hints:
+                    if h and brand_keyword and (h in brand_keyword) and (h in raw_q):
+                        explicit = True
+                        break
+            if not explicit:
+                brand_keyword = None
             # 检查是否已经包含品牌关键词
             has_brand_keyword = False
-            for kw in keywords:
-                kw_lower = kw.lower()
-                brand_lower = brand_keyword.lower()
-                # 如果关键词中包含品牌，或者品牌包含在关键词中，认为已经匹配
-                if brand_lower in kw_lower or kw_lower in brand_lower:
-                    has_brand_keyword = True
-                    break
-            
-            if not has_brand_keyword:
-                keywords.insert(0, brand_keyword)  # 插入到开头
+            if brand_keyword:
+                for kw in keywords:
+                    kw_lower = kw.lower()
+                    brand_lower = brand_keyword.lower()
+                    # 如果关键词中包含品牌，或者品牌包含在关键词中，认为已经匹配
+                    if brand_lower in kw_lower or kw_lower in brand_lower:
+                        has_brand_keyword = True
+                        break
+                if not has_brand_keyword:
+                    keywords.insert(0, brand_keyword)  # 插入到开头
         
         if not keywords:
             return []
@@ -906,13 +1373,17 @@ class SearchService:
                 option_value = option_value[:-len(suffix)].strip()
                 break
         
-        # 常见品牌列表
+        # 常见品牌列表（含复合品牌；用于解析选项里的“品牌 + 系列/型号”）
+        # NOTE: 必须优先匹配更长的复合品牌，避免 “重汽豪瀚” 被错误解析成 “重汽”。
         common_brands = [
+            "东风天龙", "东风乘龙", "一汽解放", "中国重汽", "上汽大通", "福田欧曼", "红岩杰狮",
+            "重汽豪瀚", "重汽豪汉", "重汽豪沃",
             '三一', '徐工', '斗山', '杰西博', '久保田', '卡特彼勒', '凯斯',
             '龙工', '柳工', '雷沃', '日立', '山东临工', '山重建机', '山河智能',
             '神钢', '沃尔沃', '小松', '东风', '解放', '重汽', '福田', '乘龙',
-            '红岩', '豪瀚', '欧曼', '上汽大通', '五十铃', '康明斯', '玉柴'
+            '红岩', '豪瀚', '欧曼', '五十铃', '康明斯', '玉柴'
         ]
+        common_brands = sorted(common_brands, key=len, reverse=True)
         
         # 如果包含空格，尝试分割（如"东风 DOC"、"东风 DOCX"）
         if ' ' in option_value:
@@ -930,6 +1401,7 @@ class SearchService:
                 # 验证品牌部分是否是有效品牌
                 brand = None
                 for b in common_brands:
+                    # 复合品牌：需要更严格，优先“相等/包含”
                     if b == brand_part or b in brand_part or brand_part in b:
                         brand = b
                         break
@@ -940,7 +1412,7 @@ class SearchService:
         # 尝试匹配品牌（不包含空格的情况）
         brand = None
         for b in common_brands:
-            if b in option_value:
+            if b and b in option_value:
                 brand = b
                 break
         

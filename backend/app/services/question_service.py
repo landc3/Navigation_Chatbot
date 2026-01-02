@@ -4,6 +4,7 @@
 """
 from typing import List, Dict, Optional, Any
 import re
+import string
 from backend.app.models.circuit_diagram import CircuitDiagram
 from backend.app.models.types import ScoredResult, rebuild_scored_result_model
 from backend.app.services.search_service import get_search_service
@@ -20,6 +21,29 @@ class QuestionService:
         """初始化问题生成服务"""
         self.search_service = get_search_service()
         self.llm_service = get_llm_service()
+
+    @staticmethod
+    def _make_option_labels(n: int) -> List[str]:
+        """
+        生成足够数量的选项标签：A..Z, AA..AZ, BA..BZ...
+        """
+        if n <= 0:
+            return []
+        letters = string.ascii_uppercase
+
+        def idx_to_label(idx: int) -> str:
+            # Excel-style column naming (0-based)
+            out = ""
+            x = idx
+            while True:
+                x, rem = divmod(x, 26)
+                out = letters[rem] + out
+                if x == 0:
+                    break
+                x -= 1
+            return out
+
+        return [idx_to_label(i) for i in range(n)]
     
     def generate_question(
         self,
@@ -139,16 +163,10 @@ class QuestionService:
                             options = self._extract_series_from_filenames(results, max_options, context)
                             print(f"🔍 文件名提取返回选项数: {len(options) if options else 0}")
             elif option_type == "type":
-                # 对于类型选项，如果用户已经指定了品牌，优先提取包含类型关键词的具体类型变体
-                # 例如：如果用户已经指定了"仪表图"，提取"ECU仪表针脚图"、"整车仪表线路图"等
-                options = self._extract_type_variants(results, max_options, context)
-                # 如果提取失败，使用标准方法
-                if not options or len(options) < min_options:
-                    options = self.search_service.extract_options(
-                        results,
-                        option_type,
-                        max_options=max_options
-                    )
+                # 关键修复：
+                # - “type” 必须按当前候选集的 diagram_type 进行**分桶**（每条数据只属于一个桶），
+                #   否则会出现“选项显示4条，但点进去变33条”的严重不一致。
+                options = self._extract_disjoint_type_options(results, max_options=max_options)
             elif option_type == "config":
                 options = self._extract_config_variants(results, max_options=max_options, context=context)
             else:
@@ -181,7 +199,15 @@ class QuestionService:
                         pass
             
             # 优化选项（去重、排序）
-            options = self.optimize_options(options, max_options)
+            # IMPORTANT: options may already carry exact ids. When ids are present,
+            # we must keep count == len(ids) and ensure “其他”闭合。
+            options = self._finalize_options_with_ids(
+                option_type=option_type,
+                options=options,
+                results=results,
+                max_options=max_options,
+                context=context,
+            )
             
             # 检查选项数量是否足够
             if options and len(options) >= min_options:
@@ -200,15 +226,16 @@ class QuestionService:
                 else:
                     question_text = self._generate_question_text(option_type, len(results), context)
                 
-                option_labels = ['A', 'B', 'C', 'D', 'E']
-                
+                option_labels = self._make_option_labels(min(max_options, len(options)))
                 formatted_options = []
                 for i, option in enumerate(options[:max_options]):
                     formatted_options.append({
                         "label": option_labels[i],
                         "name": option['name'],
-                        "count": option['count'],
-                        "type": option_type
+                        "count": int(option.get("count") or 0),
+                        "type": option_type,
+                        # Optional: exact ids for this bucket (used for precise filtering)
+                        "ids": option.get("ids") if isinstance(option, dict) else None,
                     })
                 
                 return {
@@ -228,7 +255,7 @@ class QuestionService:
                 # 使用默认模板生成问题
                 question_text = self._generate_question_text("brand_model", len(results), context)
                 
-                option_labels = ['A', 'B', 'C', 'D', 'E']
+                option_labels = self._make_option_labels(min(max_options, len(fallback_options)))
                 formatted_options = []
                 for i, option in enumerate(fallback_options[:max_options]):
                     formatted_options.append({
@@ -248,6 +275,129 @@ class QuestionService:
         
         # 如果所有方法都失败，返回None
         return None
+
+    def _extract_disjoint_type_options(
+        self,
+        results: List[ScoredResult],
+        max_options: int = 5,
+    ) -> List[Dict]:
+        """
+        Disjoint type buckets based on diagram.diagram_type.
+        Each diagram belongs to at most one bucket.
+        """
+        type_to_ids: Dict[str, set] = {}
+        for r in results:
+            d = r.diagram
+            t = (getattr(d, "diagram_type", None) or "").replace("*", "").strip()
+            if not t:
+                t = "其他（未标注类型）"
+            type_to_ids.setdefault(t, set()).add(d.id)
+        options = [{"name": k, "count": len(v), "ids": sorted(v)} for k, v in type_to_ids.items()]
+        options.sort(key=lambda x: (-x["count"], x["name"]))
+        return options[: max(1, max_options * 5)]
+
+    def _finalize_options_with_ids(
+        self,
+        option_type: str,
+        options: List[Dict],
+        results: List[ScoredResult],
+        max_options: int,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict]:
+        """
+        Normalize/merge options and ensure:
+        - each option has ids
+        - count == len(ids)
+        - append “其他（未分类/更多）” to close coverage when truncated
+        """
+        if not options:
+            return []
+
+        # Build mapping name -> ids (prefer provided ids; otherwise compute via disjoint field buckets)
+        all_ids = {r.diagram.id for r in results}
+
+        def norm_name(s: str) -> str:
+            if not s:
+                return ""
+            s = str(s).replace("*", "").strip()
+            s = re.sub(r"\s+", " ", s)
+            s = re.sub(r"(系列)\s*(系列)+", r"\1", s)
+            return s.strip()
+
+        merged: Dict[str, set] = {}
+
+        # Fast paths: if options already have ids, just merge by normalized name
+        has_any_ids = any(isinstance(o, dict) and isinstance(o.get("ids"), list) for o in options)
+        if has_any_ids:
+            for o in options:
+                name = norm_name(o.get("name"))
+                ids = o.get("ids") or []
+                if not name:
+                    continue
+                merged.setdefault(name, set()).update(ids)
+        else:
+            # Fallback: compute ids from parsed fields for disjoint types where possible
+            # brand/model/category/brand_model use parsed fields => disjoint buckets, stable counts
+            opt = (option_type or "").strip().lower()
+            if opt in ("brand", "model", "category", "vehicle_category", "brand_model", "brand+model"):
+                for r in results:
+                    d = r.diagram
+                    if opt == "brand":
+                        key = (d.brand or "").strip() or "其他（未标注品牌）"
+                    elif opt == "model":
+                        key = (d.model or "").strip() or "其他（未标注型号/系列）"
+                    elif opt in ("category", "vehicle_category"):
+                        key = (getattr(d, "vehicle_category", None) or "").strip() or "其他（未标注类别）"
+                    else:
+                        b = (d.brand or "").strip()
+                        m = (d.model or "").strip()
+                        if b and m:
+                            key = f"{b} {m}"
+                        elif b:
+                            key = b
+                        elif m:
+                            key = m
+                        else:
+                            key = "其他（未标注品牌/型号）"
+                    key = norm_name(key)
+                    merged.setdefault(key, set()).add(d.id)
+            elif opt == "type":
+                for r in results:
+                    d = r.diagram
+                    key = (getattr(d, "diagram_type", None) or "").strip() or "其他（未标注类型）"
+                    key = norm_name(key)
+                    merged.setdefault(key, set()).add(d.id)
+            else:
+                # Unknown: keep original counts, but without ids we cannot guarantee consistency
+                # (still better to return as-is)
+                return self.optimize_options(options, max_options)
+
+        # Convert to list with ids
+        items = [{"name": k, "ids": sorted(v), "count": len(v)} for k, v in merged.items() if k]
+        items.sort(key=lambda x: (-x["count"], x["name"]))
+
+        # Remove non-discriminating buckets: options that cover the entire candidate set
+        # These lead to "23 → 23" no-op selections and can trap users in non-converging loops.
+        if all_ids:
+            items = [it for it in items if set(it.get("ids") or []) != all_ids]
+
+        # Apply truncation with “其他” closure (only when there are more than max_options buckets)
+        if max_options <= 0:
+            return []
+
+        if len(items) <= max_options:
+            return items
+
+        head_limit = max_options - 1 if max_options >= 3 else max_options
+        head = items[:head_limit]
+        used = set()
+        for it in head:
+            used |= set(it["ids"])
+        rest = all_ids - used
+        if rest and head_limit < max_options:
+            head.append({"name": "其他（未分类/更多）", "ids": sorted(rest), "count": len(rest)})
+        head.sort(key=lambda x: (-x["count"], x["name"]))
+        return head[:max_options]
 
     def _extract_config_variants(
         self,
@@ -347,7 +497,8 @@ class QuestionService:
         from backend.app.utils.hierarchy_util import HierarchyUtil
         
         diagrams = [result.diagram for result in results]
-        option_counts = {}
+        option_counts: Dict[str, int] = {}
+        option_ids: Dict[str, set] = {}
         
         # 从上下文中获取用户意图的品牌（可能是复合品牌）
         user_brand = None
@@ -578,6 +729,7 @@ class QuestionService:
                     display_brand = user_brand if user_brand else (diagram.brand or "东风")
                     option_name = f"{display_brand} {series_code} 系列"
                     option_counts[option_name] = option_counts.get(option_name, 0) + 1
+                    option_ids.setdefault(option_name, set()).add(diagram.id)
                 elif level_value_clean and level_value_clean != diagram.brand and len(level_value_clean) <= 15:
                     # 如果没有提取到系列代码，但层级值有意义，使用层级值
                     # 跳过类型相关的层级
@@ -586,43 +738,39 @@ class QuestionService:
                         display_brand = user_brand if user_brand else (diagram.brand or "东风")
                         option_name = f"{display_brand} {level_value_clean}"
                         option_counts[option_name] = option_counts.get(option_name, 0) + 1
+                        option_ids.setdefault(option_name, set()).add(diagram.id)
         
-        # 验证并重新计算count，确保与实际筛选结果一致
-        # 这样可以避免显示有结果但筛选后没有结果的问题
-        from backend.app.services.search_service import get_search_service
-        search_service = get_search_service()
-        
-        validated_options = []
-        for option_name, _ in sorted(option_counts.items(), key=lambda x: x[1], reverse=True)[:max_options]:
-            # 解析选项名称，获取品牌和型号
-            brand, model = search_service._parse_brand_model(option_name)
-            if brand and model:
-                # 使用筛选逻辑验证实际能筛选到的结果数量
-                filtered_diagrams = HierarchyUtil.filter_by_brand(diagrams, brand)
-                if filtered_diagrams:
-                    filtered_diagrams = HierarchyUtil.filter_by_model(filtered_diagrams, model)
-                    actual_count = len(filtered_diagrams)
-                else:
-                    actual_count = 0
-            elif brand:
-                # 只有品牌，使用品牌筛选
-                filtered_diagrams = HierarchyUtil.filter_by_brand(diagrams, brand)
-                actual_count = len(filtered_diagrams)
-            else:
-                # 无法解析，使用原始count
-                actual_count = option_counts.get(option_name, 0)
-            
-            # 只添加实际有结果的选项
-            if actual_count > 0:
-                validated_options.append({
-                    "name": option_name,
-                    "count": actual_count
-                })
-        
-        # 按实际count排序
-        validated_options.sort(key=lambda x: x["count"], reverse=True)
-        
-        return validated_options[:max_options]
+        # 关键修复：
+        # - 为每个选项携带精确 ids，后续筛选直接按 ids 过滤，避免 “选NT却混入MT/N” 的不精确问题
+        # - 加入 “其他/未分类” 桶，让选项 count 能覆盖上一轮总数（即使被 max_options 截断）
+
+        # 先按 count 排序
+        sorted_names = [n for n, _ in sorted(option_counts.items(), key=lambda x: x[1], reverse=True)]
+        total_ids = {d.id for d in diagrams}
+
+        # 预留一个槽位给 “其他”，保证 sums 闭合
+        head_limit = max_options
+        reserve_other = True
+        if reserve_other and head_limit >= 3:
+            head_limit = max_options - 1
+
+        chosen_names = sorted_names[:head_limit]
+        chosen: List[Dict] = []
+        used_ids = set()
+        for name in chosen_names:
+            ids = set(option_ids.get(name, set()))
+            if not ids:
+                # fallback：没有 ids 记录时使用计数（但尽量不发生）
+                continue
+            used_ids |= ids
+            chosen.append({"name": name, "count": len(ids), "ids": sorted(ids)})
+
+        remaining_ids = total_ids - used_ids
+        if reserve_other and remaining_ids:
+            chosen.append({"name": "其他（未分类/更多）", "count": len(remaining_ids), "ids": sorted(remaining_ids)})
+
+        chosen.sort(key=lambda x: x["count"], reverse=True)
+        return chosen[:max_options]
 
     def _extract_variant_options(
         self,
@@ -874,10 +1022,20 @@ class QuestionService:
         if not options:
             return []
         
-        # 去重：合并相似选项
+        # 去重：合并相似选项（先做轻度规范化，避免因为空格/重复“系列”导致 A/B 看起来一样）
+        def norm_name(s: str) -> str:
+            if not s:
+                return ""
+            s = str(s).strip()
+            s = re.sub(r"\s+", " ", s)
+            s = s.replace("  ", " ")
+            # collapse duplicated “系列”
+            s = re.sub(r"(系列)\s*(系列)+", r"\1", s)
+            return s.strip()
+
         merged_options = {}
         for option in options:
-            name = option['name']
+            name = norm_name(option['name'])
             count = option['count']
             
             # 检查是否有相似的选项（包含关系）
