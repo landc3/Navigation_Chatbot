@@ -44,7 +44,7 @@
 2. 复制 `.env.example` 的内容
 3. 修改 API Key：
    ```
-   ALI_QWEN_API_KEY=sk-7e1aeb711dec4355b53ecd8ff0116057
+   ALI_QWEN_API_KEY=sk-your-api-key-here
    ```
 
 #### 方法2：系统环境变量
@@ -53,11 +53,11 @@
 3. 点击"环境变量"
 4. 在"用户变量"中新建：
    - 变量名：`ALI_QWEN_API_KEY`
-   - 变量值：`sk-7e1aeb711dec4355b53ecd8ff0116057`
+   - 变量值：`sk-your-api-key-here`
 
 #### 方法3：PowerShell 临时设置（仅当前会话）
 ```powershell
-$env:ALI_QWEN_API_KEY="sk-7e1aeb711dec4355b53ecd8ff0116057"
+$env:ALI_QWEN_API_KEY="sk-your-api-key-here"
 ```
 
 ### Linux/Mac 系统
@@ -74,7 +74,7 @@ nano .env
 #### 方法2：系统环境变量
 ```bash
 # 添加到 ~/.bashrc 或 ~/.zshrc
-export ALI_QWEN_API_KEY="sk-7e1aeb711dec4355b53ecd8ff0116057"
+export ALI_QWEN_API_KEY="sk-your-api-key-here"
 
 # 重新加载配置
 source ~/.bashrc  # 或 source ~/.zshrc
@@ -93,7 +93,7 @@ import os
 from dashscope import Generation
 
 # 从环境变量读取 API Key
-api_key = os.getenv('ALI_QWEN_API_KEY', 'sk-7e1aeb711dec4355b53ecd8ff0116057')
+api_key = os.getenv('ALI_QWEN_API_KEY', 'sk-your-api-key-here')
 
 # 调用 API
 def call_qwen(prompt, model='qwen-plus'):
@@ -175,7 +175,7 @@ python test_api.py
 ## 八、常见问题
 
 ### Q1: API Key 格式是什么？
-A: 格式为 `sk-` 开头的字符串，例如：`sk-7e1aeb711dec4355b53ecd8ff0116057`
+A: 格式为 `sk-` 开头的字符串，例如：`sk-your-api-key-here`
 
 ### Q2: 如何查看 API 使用量和费用？
 A: 登录 DashScope 控制台 → 费用中心，可以查看使用量和费用
@@ -192,7 +192,7 @@ A: 官方提供 Python SDK，其他语言可以通过 HTTP API 调用
 
 ---
 
-**你的 API Key 已配置：** `sk-7e1aeb711dec4355b53ecd8ff0116057`
+**你的 API Key 已配置：** `sk-your-api-key-here`
 
 现在可以开始开发了！🚀
 

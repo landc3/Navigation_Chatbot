@@ -1,8 +1,9 @@
-import React from 'react'
+import React, { useState } from 'react'
 import './ChatMessage.css'
 
-function ChatMessage({ message, onOptionClick }) {
+function ChatMessage({ message, onOptionClick, optionsDisabled = false }) {
   const isUser = message.role === 'user'
+  const [copied, setCopied] = useState(false)
 
   const handleOptionClick = (option) => {
     if (onOptionClick) {
@@ -11,9 +12,45 @@ function ChatMessage({ message, onOptionClick }) {
     }
   }
 
+  const copyToClipboard = async () => {
+    if (!message?.content) return
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message.content)
+      } else {
+        // 兼容性兜底
+        const textarea = document.createElement('textarea')
+        textarea.value = message.content
+        textarea.style.position = 'fixed'
+        textarea.style.left = '-9999px'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch (e) {
+      console.error('复制失败:', e)
+    }
+  }
+
   return (
     <div className={`chat-message ${isUser ? 'user' : 'assistant'}`}>
       <div className="message-content">
+        {!isUser && (
+          <div className="message-actions">
+            <button
+              type="button"
+              className="message-action-btn"
+              onClick={copyToClipboard}
+              aria-label="复制回答"
+              title="复制"
+            >
+              {copied ? '已复制' : '复制'}
+            </button>
+          </div>
+        )}
         <div className="message-text">
           {message.content.split('\n').map((line, index) => (
             <React.Fragment key={index}>
@@ -30,6 +67,7 @@ function ChatMessage({ message, onOptionClick }) {
                   key={index}
                   className="option-button"
                   onClick={() => handleOptionClick(option)}
+                  disabled={optionsDisabled}
                 >
                   <span className="option-label">{option.label}</span>
                   <span className="option-name">{option.name}</span>

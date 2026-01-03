@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import ChatMessage from './components/ChatMessage'
 import ChatInput from './components/ChatInput'
 import FileList from './components/FileList'
+import TypingIndicator from './components/TypingIndicator'
 import { sendMessage } from './services/api'
 import './App.css'
 
@@ -13,6 +14,9 @@ function App() {
     }
   ])
   const [isLoading, setIsLoading] = useState(false)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const [hasNewSinceScroll, setHasNewSinceScroll] = useState(false)
   const [files, setFiles] = useState([
     // 初始化已识别的文件
     {
@@ -22,14 +26,47 @@ function App() {
     }
   ])
   const messagesEndRef = useRef(null)
+  const messagesContainerRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
   useEffect(() => {
-    scrollToBottom()
+    // 只有在用户位于底部附近时才自动滚动，避免用户回看历史时被强制拉回底部
+    if (isAtBottom) {
+      scrollToBottom()
+    } else {
+      setHasNewSinceScroll(true)
+    }
   }, [messages])
+
+  useEffect(() => {
+    if (isAtBottom) {
+      setHasNewSinceScroll(false)
+    }
+  }, [isAtBottom])
+
+  useEffect(() => {
+    // 打开移动端侧栏时，锁定背景滚动
+    if (isSidebarOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [isSidebarOpen])
+
+  const handleMessagesScroll = () => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    const threshold = 80
+    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+    const atBottom = distanceFromBottom < threshold
+    setIsAtBottom(atBottom)
+  }
 
   const handleSendMessage = async (content) => {
     if (!content.trim() || isLoading) return
@@ -38,6 +75,8 @@ function App() {
     const userMessage = { role: 'user', content: content.trim() }
     setMessages(prev => [...prev, userMessage])
     setIsLoading(true)
+    // 用户主动发送时，尽量保持在底部
+    setIsAtBottom(true)
 
     try {
       // 调用API
@@ -86,20 +125,43 @@ function App() {
       <div className="app-content">
         <main className="app-main">
           <div className="brand-header">
+            <button
+              type="button"
+              className="sidebar-toggle"
+              onClick={() => setIsSidebarOpen(true)}
+              aria-label="打开已识别文件侧栏"
+              title="已识别文件"
+            >
+              文件
+            </button>
             <h1 className="brand-name">Chatbot</h1>
           </div>
-          <div className="messages-container">
+          <div
+            className="messages-container"
+            ref={messagesContainerRef}
+            onScroll={handleMessagesScroll}
+          >
             {messages.map((message, index) => (
               <ChatMessage 
                 key={index} 
                 message={message} 
                 onOptionClick={handleSendMessage}
+                optionsDisabled={isLoading}
               />
             ))}
             {isLoading && (
-              <div className="loading-indicator">
-                <span>正在思考...</span>
-              </div>
+              <TypingIndicator />
+            )}
+            {!isAtBottom && (
+              <button
+                type="button"
+                className={`scroll-to-bottom ${hasNewSinceScroll ? 'has-new' : ''}`}
+                onClick={scrollToBottom}
+                aria-label="回到最新消息"
+                title="回到最新消息"
+              >
+                回到底部{hasNewSinceScroll ? ' · 新消息' : ''}
+              </button>
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -109,7 +171,26 @@ function App() {
             disabled={isLoading} 
           />
         </main>
-        <aside className="file-sidebar">
+        {isSidebarOpen && (
+          <div
+            className="sidebar-backdrop"
+            onClick={() => setIsSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+        <aside className={`file-sidebar ${isSidebarOpen ? 'open' : ''}`}>
+          <div className="file-sidebar-mobile-header">
+            <div className="file-sidebar-title">已识别文件</div>
+            <button
+              type="button"
+              className="file-sidebar-close"
+              onClick={() => setIsSidebarOpen(false)}
+              aria-label="关闭侧栏"
+              title="关闭"
+            >
+              关闭
+            </button>
+          </div>
           <FileList files={files} />
         </aside>
       </div>

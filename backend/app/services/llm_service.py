@@ -21,9 +21,13 @@ class LLMService:
         self.model = Config.ALI_QWEN_MODEL
         self.max_tokens = Config.MAX_TOKENS
         self.temperature = Config.TEMPERATURE
+        self.enabled = bool(self.api_key and str(self.api_key).strip())
         
-        # 设置API Key
-        dashscope.api_key = self.api_key
+        # 设置API Key（未配置时允许降级为“无 LLM”模式）
+        if self.enabled:
+            dashscope.api_key = self.api_key
+        else:
+            print("⚠️  未配置 ALI_QWEN_API_KEY：将以无 LLM 模式运行（意图理解/问题生成会降级）")
         
         # 近义词映射表
         self.synonyms = {
@@ -67,6 +71,8 @@ class LLMService:
         Raises:
             Exception: API调用失败时抛出异常
         """
+        if not self.enabled:
+            raise Exception("ALI_QWEN_API_KEY 未设置，LLM 功能不可用")
         try:
             response = Generation.call(
                 model=model or self.model,

@@ -18,7 +18,7 @@ except ImportError:
 
 def test_qwen_api():
     """测试通义千问 API 连接"""
-    api_key = os.getenv('ALI_QWEN_API_KEY', 'sk-7e1aeb711dec4355b53ecd8ff0116057')
+    api_key = os.getenv('ALI_QWEN_API_KEY', 'sk-your-api-key-here')
     model = os.getenv('ALI_QWEN_MODEL', 'qwen-plus-2025-07-28')  # 最新版本
     
     if not api_key:

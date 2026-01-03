@@ -28,17 +28,43 @@
   padding: 1rem 1.25rem;
   border-radius: 0.75rem;
   word-wrap: break-word;
+  position: relative;
 }
 
 .chat-message.user .message-content {
   background-color: #2563eb;
   color: white;
+  border-bottom-right-radius: 0.35rem;
 }
 
 .chat-message.assistant .message-content {
   background-color: #f3f4f6;
   color: #1f2937;
   border: 1px solid #e5e7eb;
+  border-bottom-left-radius: 0.35rem;
+}
+
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.35rem;
+}
+
+.message-action-btn {
+  height: 28px;
+  padding: 0 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #374151;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.message-action-btn:hover {
+  background: #f9fafb;
+  border-color: #d1d5db;
 }
 
 .message-text {
@@ -157,6 +183,18 @@
   transform: translateX(2px);
 }
 
+.option-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  background-color: #f9fafb;
+  border-color: #93c5fd;
+}
+
+.option-button:disabled:hover {
+  transform: none;
+}
+
 .option-label {
   font-weight: 600;
   color: #2563eb;
@@ -172,5 +210,20 @@
 .option-count {
   color: #6b7280;
   font-size: 0.85rem;
+}
+
+@media (max-width: 768px) {
+  .message-content {
+    max-width: 92%;
+    padding: 0.9rem 1rem;
+  }
+
+  .message-text {
+    font-size: 0.95rem;
+  }
+
+  .option-button {
+    padding: 0.75rem 0.9rem;
+  }
 }
 

@@ -201,7 +201,7 @@ def start_backend():
 
 def start_frontend():
     """启动前端服务"""
-    Colors.print("🎨 启动前端服务 (端口 3000)...", Colors.CYAN)
+    Colors.print("🎨 启动前端服务 (端口 3500)...", Colors.CYAN)
     
     frontend_dir = Path('frontend')
     if sys.platform == 'win32':

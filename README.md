@@ -66,7 +66,7 @@ cd frontend
 npm run dev
 ```
 
-前端将在 `http://localhost:3500` 启动
+前端将在 `http://localhost:3500` 启动（Vite）
 
 ### 访问应用
 
@@ -103,6 +103,11 @@ Navigation_Chatbot/
 ### 测试数据加载模块
 ```bash
 python backend/test_data_loader.py
+```
+
+### 使用 keywords.txt 做回归检查（推荐）
+```bash
+python scripts/e2e_keywords_check.py
 ```
 
 ### 测试API接口
@@ -143,4 +148,34 @@ curl -X POST http://localhost:8000/api/chat \
 ## 📄 许可证
 
 MIT License
+
+## 🚢 部署（生产环境）
+
+### 方案A：Docker 一键部署（推荐）
+
+- **前置**：安装 Docker / Docker Compose
+- **配置**：在宿主机环境变量或 `.env` 中设置 `ALI_QWEN_API_KEY`
+- **启动**：
+
+```bash
+docker compose up --build
+```
+
+- **访问**：
+  - **前端**：`http://localhost`（Nginx 静态托管 + `/api` 反代）
+  - **后端**：`http://localhost:8000`
+
+### 方案B：本地生产构建
+
+- **Windows PowerShell**：
+
+```powershell
+.\scripts\start_prod.ps1
+```
+
+- **macOS/Linux**：
+
+```bash
+bash scripts/start_prod.sh
+```
 

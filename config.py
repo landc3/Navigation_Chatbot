@@ -13,7 +13,8 @@ class Config:
     """应用配置"""
     
     # 通义千问 API 配置
-    ALI_QWEN_API_KEY = os.getenv('ALI_QWEN_API_KEY', 'sk-7e1aeb711dec4355b53ecd8ff0116057')
+    # 生产环境务必通过环境变量注入，不要把真实 Key 写进代码仓库
+    ALI_QWEN_API_KEY = os.getenv('ALI_QWEN_API_KEY', '')
     # 使用最新的 Qwen-Plus 版本（2025-07-28），支持1M上下文，阶梯计费
     ALI_QWEN_MODEL = os.getenv('ALI_QWEN_MODEL', 'qwen-plus-2025-07-28')  # 最新版本
     
@@ -46,7 +47,7 @@ class Config:
     def validate(cls):
         """验证配置"""
         if not cls.ALI_QWEN_API_KEY:
-            raise ValueError("ALI_QWEN_API_KEY 未设置")
+            raise ValueError("ALI_QWEN_API_KEY 未设置（请在 .env 或环境变量中配置）")
         
         if not cls.ALI_QWEN_API_KEY.startswith('sk-'):
             print("⚠️  警告：API Key 格式可能不正确（应以 'sk-' 开头）")
