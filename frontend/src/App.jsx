@@ -103,6 +103,55 @@ function App() {
     }
   }
 
+  const handleQuickAction = async (action) => {
+    if (isLoading) return
+
+    let messageContent = ''
+    let shouldAddUserMessage = true
+    if (action === '重新表述需求') {
+      messageContent = '我要重述需求'
+    } else if (action === '返回上一步') {
+      messageContent = '返回上一步'
+      // 返回上一步是操作命令，不需要显示用户消息
+      shouldAddUserMessage = false
+    } else {
+      return
+    }
+
+    // 对于返回上一步，不添加用户消息（因为这是操作命令，不是对话内容）
+    if (shouldAddUserMessage) {
+      const userMessage = { role: 'user', content: messageContent }
+      setMessages(prev => [...prev, userMessage])
+    }
+    
+    setIsLoading(true)
+    setIsAtBottom(true)
+
+    try {
+      // 调用API
+      const response = await sendMessage(messageContent, messages)
+
+      // 添加助手回复
+      const assistantMessage = {
+        role: 'assistant',
+        content: response.message,
+        results: response.results,
+        options: response.options,
+        needs_choice: response.needs_choice
+      }
+      setMessages(prev => [...prev, assistantMessage])
+    } catch (error) {
+      console.error('快捷操作失败:', error)
+      const errorMessage = {
+        role: 'assistant',
+        content: '抱歉，操作失败。请稍后重试。'
+      }
+      setMessages(prev => [...prev, errorMessage])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const handleFileUpload = (file) => {
     const newFile = {
       name: file.name,
@@ -115,7 +164,7 @@ function App() {
       })
     }
     setFiles(prev => [...prev, newFile])
-    
+
     // 这里可以添加文件上传到后端的逻辑
     // 例如：uploadFile(file)
   }
@@ -142,10 +191,11 @@ function App() {
             onScroll={handleMessagesScroll}
           >
             {messages.map((message, index) => (
-              <ChatMessage 
-                key={index} 
-                message={message} 
+              <ChatMessage
+                key={index}
+                message={message}
                 onOptionClick={handleSendMessage}
+                onQuickAction={handleQuickAction}
                 optionsDisabled={isLoading}
               />
             ))}

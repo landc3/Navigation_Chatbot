@@ -34,7 +34,7 @@ class ConversationState(BaseModel):
         # 排除 search_results 和 intent_result 字段的序列化
         # 这些字段包含复杂对象，不需要在 API 响应中序列化
     )
-    
+
     state: ConversationStateEnum = Field(
         ConversationStateEnum.INITIAL,
         description="当前对话状态"
@@ -61,7 +61,7 @@ class ConversationState(BaseModel):
         description="消息历史记录"
     )
     intent_result: Optional[Any] = Field(
-        None, 
+        None,
         description="意图理解结果",
         exclude=True  # 排除序列化
     )
@@ -69,6 +69,11 @@ class ConversationState(BaseModel):
         None,
         description="放宽搜索元信息（用于确认/调试）",
         exclude=True,
+    )
+    state_history: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="状态历史记录，用于支持返回上一步功能",
+        exclude=True,  # 不序列化给前端
     )
     
     def add_message(self, role: str, content: str):
@@ -95,6 +100,52 @@ class ConversationState(BaseModel):
         self.filter_history = []
         self.message_history = []
         self.intent_result = None
+        self.relax_meta = None
+        self.state_history = []
+
+    def save_state_snapshot(self):
+        """保存当前状态的快照，用于返回上一步功能"""
+        # 只在有意义的状态下保存快照（避免保存初始状态或错误状态）
+        if self.state not in [ConversationStateEnum.INITIAL, ConversationStateEnum.COMPLETED]:
+            snapshot = {
+                "state": self.state,
+                "current_query": self.current_query,
+                "search_results": self.search_results.copy() if self.search_results else [],
+                "current_options": self.current_options.copy() if self.current_options else [],
+                "option_type": self.option_type,
+                "filter_history": self.filter_history.copy() if self.filter_history else [],
+                "message_history": self.message_history.copy() if self.message_history else [],
+                "intent_result": self.intent_result,
+                "relax_meta": self.relax_meta.copy() if self.relax_meta else None,
+                "timestamp": __import__("time").time()
+            }
+            # 限制历史记录数量，避免内存占用过多
+            if len(self.state_history) >= 10:
+                self.state_history.pop(0)
+            self.state_history.append(snapshot)
+
+    def can_undo(self) -> bool:
+        """检查是否可以返回上一步"""
+        return len(self.state_history) > 0
+
+    def undo_last_step(self):
+        """返回上一步的状态"""
+        if not self.can_undo():
+            return False
+
+        # 恢复上一个状态
+        last_snapshot = self.state_history.pop()
+        self.state = last_snapshot["state"]
+        self.current_query = last_snapshot["current_query"]
+        self.search_results = last_snapshot["search_results"]
+        self.current_options = last_snapshot["current_options"]
+        self.option_type = last_snapshot["option_type"]
+        self.filter_history = last_snapshot["filter_history"]
+        self.message_history = last_snapshot["message_history"]
+        self.intent_result = last_snapshot["intent_result"]
+        self.relax_meta = last_snapshot["relax_meta"]
+
+        return True
     
     def update_state(self, new_state: ConversationStateEnum):
         """更新对话状态"""

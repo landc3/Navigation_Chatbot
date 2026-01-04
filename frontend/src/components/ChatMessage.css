@@ -67,6 +67,14 @@
   border-color: #d1d5db;
 }
 
+.message-action-btn:nth-child(2) {
+  margin-left: 0.5rem;
+}
+
+.message-action-btn:nth-child(3) {
+  margin-left: 0.25rem;
+}
+
 .message-text {
   line-height: 1.7;
   white-space: pre-wrap;

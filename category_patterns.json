@@ -1,0 +1,106 @@
+{
+  "description": "文档类别提取模式配置",
+  "version": "1.0",
+  "patterns": {
+    "diagnostic_guide": {
+      "description": "诊断指导类文档模式",
+      "suffixes": ["_诊断指导"],
+      "extraction_method": "prefix"
+    },
+    "product_intro": {
+      "description": "产品介绍类文档模式",
+      "keywords": ["产品介绍"],
+      "extraction_method": "prefix",
+      "cleanup_patterns": [
+        "【\\d+】",
+        "[-_]"
+      ]
+    },
+    "recommended": {
+      "description": "推荐类文档模式",
+      "prefixes": ["【推荐】"],
+      "extraction_method": "after_prefix",
+      "stop_markers": ["【", "."]
+    },
+    "component_keywords": {
+      "description": "组件关键词模式（传感器、执行器等）",
+      "keywords": ["传感器", "执行器", "增压器"],
+      "extraction_method": "keyword_based",
+      "max_length_after_keyword": 10
+    },
+    "brand_patterns": {
+      "description": "品牌+系列模式",
+      "brands": [
+        "解放动力",
+        "龙擎动力",
+        "东风",
+        "重汽",
+        "柳汽",
+        "乘龙"
+      ],
+      "patterns": [
+        {
+          "brand": "解放动力",
+          "regex": "解放动力[^【]*?(?:FAW[^【]*?|【[^】]*?】)",
+          "post_processing": []
+        },
+        {
+          "brand": "龙擎动力",
+          "regex": "龙擎动力[^【]*?",
+          "post_processing": []
+        },
+        {
+          "brand": "东风",
+          "regex": "东风[^【]*?(?:天龙|乘龙)[^【]*?",
+          "post_processing": []
+        },
+        {
+          "brand": "重汽",
+          "regex": "重汽[^【]*?",
+          "post_processing": []
+        },
+        {
+          "brand": "柳汽",
+          "regex": "柳汽[^_]*?乘龙[^_]*?H\\d+[^_]*?",
+          "post_processing": [
+            {
+              "condition": "contains",
+              "value": "乘龙H",
+              "regex": "^(.*?乘龙H\\d+[A-Z]?)[_\\s]"
+            }
+          ]
+        },
+        {
+          "brand": "东风柳汽",
+          "regex": "东风柳汽[^_]*?乘龙[^_]*?H\\d+[^_]*?",
+          "post_processing": [
+            {
+              "condition": "contains",
+              "value": "乘龙H",
+              "regex": "^(.*?乘龙H\\d+[A-Z]?)[_\\s]"
+            }
+          ]
+        }
+      ],
+      "common_cleanup": [
+        "[-_]\\d+$"
+      ]
+    }
+  },
+  "fallback": {
+    "description": "通用提取机制（当没有匹配到特定模式时使用）",
+    "max_length": 30,
+    "separators": ["【", "(", "_", "-"],
+    "cleanup_patterns": [
+      "[-_]\\d+$",
+      "[-_]诊断指导$"
+    ]
+  },
+  "validation": {
+    "min_length": 2,
+    "max_length": 50,
+    "remove_spaces": true,
+    "strip_chars": "【】()（）-_"
+  }
+}
+

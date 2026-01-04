@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import './ChatMessage.css'
 
-function ChatMessage({ message, onOptionClick, optionsDisabled = false }) {
+function ChatMessage({ message, onOptionClick, onQuickAction, optionsDisabled = false }) {
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
 
@@ -49,6 +49,28 @@ function ChatMessage({ message, onOptionClick, optionsDisabled = false }) {
             >
               {copied ? '已复制' : '复制'}
             </button>
+            {onQuickAction && (
+              <>
+                <button
+                  type="button"
+                  className="message-action-btn"
+                  onClick={() => onQuickAction('重新表述需求')}
+                  aria-label="重新表述需求"
+                  title="重新表述需求"
+                >
+                  🔄 重述需求
+                </button>
+                <button
+                  type="button"
+                  className="message-action-btn"
+                  onClick={() => onQuickAction('返回上一步')}
+                  aria-label="返回上一步"
+                  title="返回上一步"
+                >
+                  ↶ 返回上一步
+                </button>
+              </>
+            )}
           </div>
         )}
         <div className="message-text">

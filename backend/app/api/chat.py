@@ -135,6 +135,9 @@ async def chat(request: ChatRequest):
     集成意图理解和对话管理
     支持多轮对话和选择题引导
     """
+    # 确保 re 模块可用（显式引用全局变量）
+    _ = re
+    
     # 获取服务实例
     search_service = get_search_service()
     llm_service = get_llm_service()
@@ -153,6 +156,28 @@ async def chat(request: ChatRequest):
             session_id=session_id
         )
     
+    # 检测用户是否想要重述需求（明确的重述需求请求）
+    rephrase_keywords = ["我要重述需求", "重述需求", "重新表述需求", "重新表达需求", "重新说", "重新输入"]
+    is_rephrase_request = False
+    for keyword in rephrase_keywords:
+        if keyword in query:
+            is_rephrase_request = True
+            break
+
+    # 处理重述需求请求
+    if is_rephrase_request:
+        # 清空对话状态，准备重新开始
+        conv_state.clear()
+        # 添加用户消息到历史
+        conv_state.add_message("user", query)
+        # 返回友好的提示，引导用户重新输入
+        friendly_message = "好的，我已经清空了之前的搜索条件。\n\n请重新输入您要查找的电路图关键词，例如：\n- 东风天龙仪表针脚图\n- 重汽豪沃整车电路图\n- 解放JH6 ECU图"
+        conv_state.add_message("assistant", friendly_message)
+        return ChatResponse(
+            message=friendly_message,
+            session_id=session_id
+        )
+
     # 检测用户是否重新表达需求（如"我要找XXX"、"找一下XXX"等）
     # 注意：不要将"我要一个XXX"误判为重置关键词
     reset_keywords = ["我要找", "找一下", "搜索", "查找", "重新", "换一个"]
@@ -166,7 +191,53 @@ async def chat(request: ChatRequest):
         # 特殊处理："我要一个XXX"不应该触发重置
         if "我要一个" in query or "我要个" in query:
             is_new_query = False
-    
+
+    # 检测用户是否想要返回上一步
+    undo_keywords = ["返回上一步", "上一步", "返回", "撤销", "后悔", "重新选择", "换一个选择"]
+    is_undo_request = False
+    for keyword in undo_keywords:
+        if keyword in query.lower():
+            is_undo_request = True
+            break
+
+    # 处理返回上一步请求
+    if is_undo_request:
+        # 不添加用户消息到历史（因为这是操作命令，不是对话内容）
+        if conv_state.can_undo():
+            # 执行撤销操作（这会从历史中恢复上一个状态）
+            success = conv_state.undo_last_step()
+            if success:
+                # 找到恢复状态后的最后一条助手消息
+                last_assistant_msg = None
+                for msg in reversed(conv_state.message_history):
+                    if msg.role == "assistant":
+                        last_assistant_msg = msg
+                        break
+
+                if last_assistant_msg:
+                    # 直接返回恢复的状态，不添加额外的提示信息
+                    return ChatResponse(
+                        message=last_assistant_msg.content,
+                        options=conv_state.current_options if conv_state.current_options else None,
+                        needs_choice=conv_state.state == ConversationStateEnum.NEEDS_CHOICE,
+                        session_id=session_id
+                    )
+                else:
+                    return ChatResponse(
+                        message="已返回上一步，但无法恢复之前的界面。请重新输入您的需求。",
+                        session_id=session_id
+                    )
+            else:
+                return ChatResponse(
+                    message="无法返回上一步，没有可用的历史状态。",
+                    session_id=session_id
+                )
+        else:
+            return ChatResponse(
+                message="无法返回上一步，这是对话的开始状态。",
+                session_id=session_id
+            )
+
     # 如果用户重新表达需求，重置对话状态
     if is_new_query:
         conv_state.clear()
@@ -179,6 +250,12 @@ async def chat(request: ChatRequest):
                 session_id=session_id
             )
     
+    # 在处理用户输入前保存当前状态（用于返回上一步功能）
+    # 在添加用户消息之前保存，这样返回上一步时不会包含用户消息
+    # 但不保存初始状态或已完成状态
+    if conv_state.state not in [ConversationStateEnum.INITIAL, ConversationStateEnum.COMPLETED]:
+        conv_state.save_state_snapshot()
+
     # 添加用户消息到历史
     conv_state.add_message("user", query)
 
@@ -323,6 +400,41 @@ async def chat(request: ChatRequest):
                     target_id = selected_option.get("id")
                     if target_id is not None:
                         filtered_results = [r for r in (filtered_results or []) if r.diagram.id == target_id]
+                elif option_type == "document_category":
+                    # 文档主题分类：如果选项有 ids，直接按 ids 过滤；否则按类别名称匹配文件名
+                    conv_state.add_filter("document_category", option_value or "")
+                    # 如果 ids 过滤没有结果（或没有 ids），尝试按名称匹配
+                    if not filtered_results or not opt_ids:
+                        from backend.app.services.search_service import SearchService
+                        category_name = SearchService._norm_text(option_value or "")
+                        if category_name:
+                            next_filtered = []
+                            for r in (conv_state.search_results or []):
+                                d = r.diagram
+                                file_name_norm = SearchService._norm_text(d.file_name or "")
+                                # 检查文件名是否包含类别名称的关键部分
+                                if category_name in file_name_norm:
+                                    next_filtered.append(r)
+                            filtered_results = next_filtered
+                elif option_type == "filename_prefix":
+                    # 文件名前缀合并：如果选项有 ids，直接按 ids 过滤；否则按前缀名称匹配文件名
+                    conv_state.add_filter("filename_prefix", option_value or "")
+                    # 如果 ids 过滤没有结果（或没有 ids），尝试按前缀名称匹配
+                    if not filtered_results or not opt_ids:
+                        from backend.app.services.search_service import SearchService
+                        prefix_name = option_value or ""
+                        # 去除"系列"后缀
+                        prefix_name = re.sub(r'系列$', '', prefix_name).strip()
+                        prefix_norm = SearchService._norm_text(prefix_name)
+                        if prefix_norm:
+                            next_filtered = []
+                            for r in (conv_state.search_results or []):
+                                d = r.diagram
+                                file_name_norm = SearchService._norm_text(d.file_name or "")
+                                # 检查文件名是否以该前缀开头
+                                if file_name_norm.startswith(prefix_norm):
+                                    next_filtered.append(r)
+                            filtered_results = next_filtered
                 
                 # 更新对话状态
                 conv_state.search_results = filtered_results
@@ -516,6 +628,43 @@ async def chat(request: ChatRequest):
                 target_id = matched_option.get("id")
                 if target_id is not None:
                     filtered_results = [r for r in (filtered_results or []) if r.diagram.id == target_id]
+            elif option_type == "document_category":
+                # 文档主题分类：如果选项有 ids，直接按 ids 过滤；否则按类别名称匹配文件名
+                conv_state.add_filter("document_category", option_value or "")
+                opt_ids = matched_option.get("ids")
+                # 如果 ids 过滤没有结果（或没有 ids），尝试按名称匹配
+                if not filtered_results or not opt_ids:
+                    from backend.app.services.search_service import SearchService
+                    category_name = SearchService._norm_text(option_value or "")
+                    if category_name:
+                        next_filtered = []
+                        for r in (conv_state.search_results or []):
+                            d = r.diagram
+                            file_name_norm = SearchService._norm_text(d.file_name or "")
+                            # 检查文件名是否包含类别名称的关键部分
+                            if category_name in file_name_norm:
+                                next_filtered.append(r)
+                        filtered_results = next_filtered
+            elif option_type == "filename_prefix":
+                # 文件名前缀合并：如果选项有 ids，直接按 ids 过滤；否则按前缀名称匹配文件名
+                conv_state.add_filter("filename_prefix", option_value or "")
+                opt_ids = matched_option.get("ids")
+                # 如果 ids 过滤没有结果（或没有 ids），尝试按前缀名称匹配
+                if not filtered_results or not opt_ids:
+                    from backend.app.services.search_service import SearchService
+                    prefix_name = option_value or ""
+                    # 去除"系列"后缀
+                    prefix_name = re.sub(r'系列$', '', prefix_name).strip()
+                    prefix_norm = SearchService._norm_text(prefix_name)
+                    if prefix_norm:
+                        next_filtered = []
+                        for r in (conv_state.search_results or []):
+                            d = r.diagram
+                            file_name_norm = SearchService._norm_text(d.file_name or "")
+                            # 检查文件名是否以该前缀开头
+                            if file_name_norm.startswith(prefix_norm):
+                                next_filtered.append(r)
+                        filtered_results = next_filtered
             
             conv_state.search_results = filtered_results
             conv_state.current_options = []

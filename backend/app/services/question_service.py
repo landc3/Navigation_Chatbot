@@ -9,6 +9,7 @@ from backend.app.models.circuit_diagram import CircuitDiagram
 from backend.app.models.types import ScoredResult, rebuild_scored_result_model
 from backend.app.services.search_service import get_search_service
 from backend.app.services.llm_service import get_llm_service
+from backend.app.utils.category_pattern_loader import get_pattern_loader
 
 # 确保 ScoredResult 模型已重建（解决前向引用问题）
 rebuild_scored_result_model()
@@ -21,6 +22,7 @@ class QuestionService:
         """初始化问题生成服务"""
         self.search_service = get_search_service()
         self.llm_service = get_llm_service()
+        self.pattern_loader = get_pattern_loader()  # 加载分类模式配置
 
     @staticmethod
     def _make_option_labels(n: int) -> List[str]:
@@ -78,6 +80,94 @@ class QuestionService:
         """
         if not results or len(results) < min_options:
             return None
+        
+        # 优先尝试文档主题分类（当结果数量较多时，可以按文档主题/类别进行分类）
+        # 例如："VGT执行器"、"解放动力"、"龙擎动力"、"涡轮增压器"等
+        if len(results) >= 6:  # 当结果数量>=6时，优先尝试文档主题分类
+            doc_category_options = self._extract_document_category_options(results, max_options=max_options)
+            print(f"🔍 文档类别提取结果: {len(doc_category_options) if doc_category_options else 0} 个选项")
+            if doc_category_options and len(doc_category_options) >= min_options:
+                # 如果提取到的类别数量>=10，尝试文件名前缀合并（在finalize之前）
+                current_option_type = "document_category"
+                if len(doc_category_options) >= 10:
+                    print(f"✅ 检测到类别数量 >= 10 ({len(doc_category_options)})，尝试文件名前缀合并...")
+                    merged_options = self._merge_filename_prefixes(results, doc_category_options, max_options=max_options)
+                    print(f"🔍 合并结果: {len(merged_options) if merged_options else 0} 个选项")
+                    if merged_options and len(merged_options) < len(doc_category_options) and len(merged_options) >= min_options:
+                        # 使用合并后的选项
+                        print(f"✅ 合并成功: {len(doc_category_options)} -> {len(merged_options)}")
+                        doc_category_options = merged_options
+                        current_option_type = "filename_prefix"
+                    else:
+                        print(f"⚠️ 合并失败或无效: merged_options={merged_options is not None}, len={len(merged_options) if merged_options else 0}, min_options={min_options}")
+                else:
+                    print(f"ℹ️ 类别数量 < 10 ({len(doc_category_options)})，跳过文件名前缀合并")
+                
+                # 如果成功提取到文档主题分类，优先使用
+                options = self._finalize_options_with_ids(
+                    option_type=current_option_type,
+                    options=doc_category_options,
+                    results=results,
+                    max_options=max_options,
+                    context=context,
+                )
+                if options and len(options) >= min_options:
+                    
+                    question_text = self._generate_question_text(current_option_type, len(results), context)
+                    option_labels = self._make_option_labels(min(max_options, len(options)))
+                    formatted_options = []
+                    for i, option in enumerate(options[:max_options]):
+                        formatted_options.append({
+                            "label": option_labels[i],
+                            "name": option['name'],
+                            "count": int(option.get("count") or 0),
+                            "type": current_option_type,
+                            "ids": option.get("ids") if isinstance(option, dict) else None,
+                        })
+                    return {
+                        "question": question_text,
+                        "options": formatted_options,
+                        "option_type": current_option_type
+                    }
+            # 如果文档主题分类提取失败或提取到的类别太多（接近结果数量），直接尝试文件名前缀合并
+            elif len(results) >= 10:
+                # 直接基于文件名生成选项并尝试合并
+                filename_options = []
+                for result in results:
+                    file_name = result.diagram.file_name or ""
+                    filename_options.append({
+                        "name": file_name,
+                        "count": 1,
+                        "ids": [result.diagram.id]
+                    })
+                
+                # 尝试合并文件名前缀
+                merged_options = self._merge_filename_prefixes(results, filename_options, max_options=max_options)
+                if merged_options and len(merged_options) >= min_options and len(merged_options) < len(results):
+                    options = self._finalize_options_with_ids(
+                        option_type="filename_prefix",
+                        options=merged_options,
+                        results=results,
+                        max_options=max_options,
+                        context=context,
+                    )
+                    if options and len(options) >= min_options:
+                        question_text = self._generate_question_text("filename_prefix", len(results), context)
+                        option_labels = self._make_option_labels(min(max_options, len(options)))
+                        formatted_options = []
+                        for i, option in enumerate(options[:max_options]):
+                            formatted_options.append({
+                                "label": option_labels[i],
+                                "name": option['name'],
+                                "count": int(option.get("count") or 0),
+                                "type": "filename_prefix",
+                                "ids": option.get("ids") if isinstance(option, dict) else None,
+                            })
+                        return {
+                            "question": question_text,
+                            "options": formatted_options,
+                            "option_type": "filename_prefix"
+                        }
         
         # 按优先级尝试生成问题：车型变体(variant) -> 品牌+型号组合 -> 品牌 -> 配置 -> 型号 -> 类型 -> 类别
         # 如果用户已经选择了品牌，尝试使用品牌+型号组合
@@ -211,6 +301,15 @@ class QuestionService:
             
             # 检查选项数量是否足够
             if options and len(options) >= min_options:
+                # 如果选项数量>=10，尝试进行文件名前缀合并
+                # 注意：只对基于文件名的选项类型进行合并（避免影响品牌、型号等结构化选项）
+                if len(options) >= 10:
+                    # 尝试基于文件名前缀合并
+                    merged_options = self._merge_filename_prefixes(results, options, max_options=max_options)
+                    if merged_options and len(merged_options) < len(options) and len(merged_options) >= min_options:
+                        options = merged_options
+                        option_type = "filename_prefix"
+                
                 # 使用LLM生成问题文本（如果启用）
                 if use_llm:
                     try:
@@ -244,9 +343,41 @@ class QuestionService:
                     "option_type": option_type
                 }
         
-        # 如果无法生成问题，尝试最后的fallback：从层级路径中提取任意有区分度的选项
+        # 如果无法生成问题，尝试最后的fallback
         if not results or len(results) < min_options:
             return None
+        
+        # 如果结果数量>=10，尝试文件名前缀合并
+        if len(results) >= 10:
+            # 先基于文件名生成选项
+            filename_options = []
+            for result in results:
+                file_name = result.diagram.file_name or ""
+                filename_options.append({
+                    "name": file_name,
+                    "count": 1,
+                    "ids": [result.diagram.id]
+                })
+            
+            # 尝试合并文件名前缀
+            merged_options = self._merge_filename_prefixes(results, filename_options, max_options=max_options)
+            if merged_options and len(merged_options) >= min_options:
+                question_text = self._generate_question_text("filename_prefix", len(results), context)
+                option_labels = self._make_option_labels(min(max_options, len(merged_options)))
+                formatted_options = []
+                for i, option in enumerate(merged_options[:max_options]):
+                    formatted_options.append({
+                        "label": option_labels[i],
+                        "name": option['name'],
+                        "count": int(option.get("count") or 0),
+                        "type": "filename_prefix",
+                        "ids": option.get("ids") if isinstance(option, dict) else None,
+                    })
+                return {
+                    "question": question_text,
+                    "options": formatted_options,
+                    "option_type": "filename_prefix"
+                }
         
         # 最后的fallback：从层级路径中提取品牌+型号组合
         try:
@@ -934,6 +1065,460 @@ class QuestionService:
         
         return options[:max_options]
     
+    def _extract_document_category_options(
+        self,
+        results: List[ScoredResult],
+        max_options: int = 5,
+        context: Optional[Dict[str, Any]] = None
+    ) -> List[Dict]:
+        """
+        从搜索结果中提取文档主题/类别选项
+        例如："VGT执行器"、"解放动力(锡柴)FAW_52E/91E"、"龙擎动力DDI13"、"涡轮增压器转速传感器"等
+        
+        使用配置化的模式提取，支持通过 category_patterns.json 配置文件扩展模式
+        
+        Args:
+            results: 搜索结果列表
+            max_options: 最大选项数量
+            context: 对话上下文（可选）
+            
+        Returns:
+            选项列表，格式：[{"name": "类别名", "count": 数量, "ids": [id列表]}, ...]
+        """
+        import re
+        from collections import defaultdict
+        
+        category_to_ids: Dict[str, set] = defaultdict(set)
+        
+        # 从配置文件加载模式
+        loader = self.pattern_loader
+        diagnostic_suffixes = loader.get_diagnostic_suffixes()
+        product_intro_keywords = loader.get_product_intro_keywords()
+        component_keywords = loader.get_component_keywords()
+        brand_list = loader.get_brand_list()
+        brand_patterns_config = loader.get_brand_patterns()
+        recommended_prefixes = loader.get_recommended_prefixes()
+        recommended_stop_markers = loader.get_recommended_stop_markers()
+        fallback_config = loader.get_fallback_config()
+        validation_config = loader.get_validation_config()
+        
+        # 定义常见的文档主题模式
+        # 1. 产品/系统名称模式（如"VGT执行器"、"涡轮增压器转速传感器"）
+        # 2. 品牌+产品模式（如"解放动力(锡柴)FAW_52E/91E"、"龙擎动力DDI13"）
+        # 3. 诊断指导类（如"VGT执行器_诊断指导"）
+        
+        for result in results:
+            diagram = result.diagram
+            file_name = diagram.file_name or ""
+            
+            # 提取文档主题/类别
+            category = None
+            
+            # 模式1: 诊断指导类（如"VGT执行器_诊断指导.DOCX" -> "VGT执行器"）
+            # 使用配置化的后缀列表
+            for suffix in diagnostic_suffixes:
+                if suffix in file_name:
+                    category = file_name.split(suffix)[0].strip()
+                    break
+            
+            # 模式2: 产品介绍类（如"龙擎动力DDI13产品介绍【5】-VGT.DOCX" -> "龙擎动力DDI13"）
+            if not category:
+                for keyword in product_intro_keywords:
+                    if keyword in file_name:
+                        # 提取"产品介绍"前面的部分
+                        parts = file_name.split(keyword)
+                        if parts:
+                            category = parts[0].strip()
+                            # 清理常见的后缀（从配置中获取）
+                            product_intro_pattern = loader.get_patterns().get("product_intro", {})
+                            cleanup_patterns = product_intro_pattern.get("cleanup_patterns", [r'【\d+】', r'[-_]'])
+                            for pattern in cleanup_patterns:
+                                category = re.sub(pattern, '', category).strip()
+                        break
+            
+            # 模式3: 【推荐】品牌+产品模式（如"【推荐】解放动力(锡柴)FAW_52E/91E 【VGT/VNT_...】" -> "【推荐】解放动力(锡柴)FAW_52E/91E"）
+            if not category:
+                for prefix in recommended_prefixes:
+                    if prefix in file_name:
+                        # 提取"【推荐】"后面的部分，直到遇到停止标记或文件扩展名
+                        after_prefix = file_name.split(prefix, 1)[1]
+                        # 提取到停止标记之前（保留前缀，因为这是重要的标识）
+                        stop_pattern = '|'.join(re.escape(marker) for marker in recommended_stop_markers)
+                        match = re.match(rf'^([^{stop_pattern}]+?)(?:{stop_pattern}|\.)', after_prefix)
+                        if match:
+                            category = prefix + match.group(1).strip()
+                        else:
+                            # 如果没有找到停止标记，提取到文件扩展名之前
+                            category_name = re.sub(r'\.[A-Z]{2,5}$', '', after_prefix, flags=re.IGNORECASE).strip()
+                            # 如果提取的名称太长，尝试在第一个停止标记处截断
+                            for marker in recommended_stop_markers:
+                                if marker in category_name:
+                                    category = prefix + category_name.split(marker)[0].strip()
+                                    break
+                            if not category:
+                                category = prefix + category_name
+                        break
+            
+            # 模式4: 传感器/执行器类（如"涡轮增压器转速传感器_诊断指导.DOCX" -> "涡轮增压器转速传感器"）
+            # 使用配置化的关键词列表
+            if not category:
+                component_pattern = loader.get_patterns().get("component_keywords", {})
+                max_length_after = component_pattern.get("max_length_after_keyword", 10)
+                for keyword in component_keywords:
+                    if keyword in file_name:
+                        # 找到关键词的位置，提取前面的部分
+                        idx = file_name.find(keyword)
+                        if idx != -1:
+                            # 提取从开头到关键词+关键词后的部分
+                            end_pos = min(idx + len(keyword) + max_length_after, len(file_name))
+                            potential = file_name[:end_pos]
+                            # 清理下划线和文件扩展名
+                            potential = re.sub(r'_[^_]*$', '', potential)
+                            potential = re.sub(r'\.[A-Z]{2,5}$', '', potential, flags=re.IGNORECASE)
+                            if len(potential) > 3:  # 确保提取到的类别有意义
+                                category = potential.strip()
+                                break
+            
+            # 模式5: 品牌+系列模式（如"解放动力(锡柴)FAW_52E/91E"、"柳汽乘龙H7"、"东风柳汽乘龙H7"）
+            # 使用配置化的品牌列表和正则表达式模式
+            if not category:
+                if any(brand in file_name for brand in brand_list):
+                    # 使用配置中的品牌正则表达式模式
+                    for pattern_config in brand_patterns_config:
+                        pattern_regex = pattern_config.get("regex")
+                        if pattern_regex:
+                            match = re.search(pattern_regex, file_name)
+                            if match:
+                                category = match.group(0).strip()
+                                # 清理文件扩展名
+                                category = re.sub(r'\.[A-Z]{2,5}$', '', category, flags=re.IGNORECASE)
+                                
+                                # 应用后处理规则
+                                post_processing = pattern_config.get("post_processing", [])
+                                for post_proc in post_processing:
+                                    condition = post_proc.get("condition")
+                                    condition_value = post_proc.get("value")
+                                    post_regex = post_proc.get("regex")
+                                    
+                                    if condition == "contains" and condition_value and post_regex:
+                                        if condition_value in category:
+                                            match_h = re.match(post_regex, category)
+                                            if match_h:
+                                                category = match_h.group(1)
+                                
+                                # 应用通用清理规则
+                                common_cleanup = loader.get_patterns().get("brand_patterns", {}).get("common_cleanup", [])
+                                for cleanup_pattern in common_cleanup:
+                                    category = re.sub(cleanup_pattern, '', category)
+                                
+                                break
+            
+            # 如果还没有提取到类别，使用通用提取机制（fallback）
+            if not category:
+                # 去除文件扩展名
+                name_without_ext = re.sub(r'\.[A-Z]{2,5}$', '', file_name, flags=re.IGNORECASE)
+                max_length = fallback_config.get("max_length", 30)
+                separators = fallback_config.get("separators", ["【", "(", "_", "-"])
+                cleanup_patterns = fallback_config.get("cleanup_patterns", [r'[-_]\d+$', r'[-_]诊断指导$'])
+                
+                # 提取前N个字符作为类别（如果文件名较长）
+                if len(name_without_ext) > max_length:
+                    # 尝试在合适的位置截断（优先在分隔符处截断）
+                    for sep in separators:
+                        if sep in name_without_ext[:max_length]:
+                            category = name_without_ext.split(sep)[0].strip()
+                            break
+                    if not category:
+                        category = name_without_ext[:max_length].strip()
+                else:
+                    # 如果文件名较短，直接使用（但要去除常见的后缀）
+                    category = name_without_ext
+                    # 去除常见的后缀模式
+                    for cleanup_pattern in cleanup_patterns:
+                        category = re.sub(cleanup_pattern, '', category)
+            
+            # 清理和规范化类别名称（使用配置化的验证规则）
+            if category:
+                # 去除多余的空格（如果配置要求）
+                if validation_config.get("remove_spaces", True):
+                    category = re.sub(r'\s+', '', category)
+                
+                # 去除指定的字符
+                strip_chars = validation_config.get("strip_chars", "【】()（）-_")
+                category = category.strip(strip_chars)
+                
+                # 验证长度
+                min_length = validation_config.get("min_length", 2)
+                max_length = validation_config.get("max_length", 50)
+                if min_length <= len(category) <= max_length:
+                    category_to_ids[category].add(diagram.id)
+        
+        # 转换为选项列表
+        options = []
+        for category, ids in category_to_ids.items():
+            if len(ids) > 0:  # 确保至少有一个结果
+                options.append({
+                    "name": category,
+                    "count": len(ids),
+                    "ids": sorted(ids)
+                })
+        
+        # 按数量降序排序
+        options.sort(key=lambda x: x["count"], reverse=True)
+        
+        # 如果类别太多，尝试合并相似的类别
+        if len(options) > max_options * 2:
+            # 合并相似的类别（例如都包含"VGT"的类别）
+            merged_options = {}
+            for opt in options:
+                name = opt["name"]
+                merged = False
+                for existing_name in list(merged_options.keys()):
+                    # 检查是否有相似性（包含相同的关键词）
+                    # 提取关键词（去除常见词）
+                    name_keywords = set(re.findall(r'[A-Z]{2,}|[\u4e00-\u9fa5]{2,}', name))
+                    existing_keywords = set(re.findall(r'[A-Z]{2,}|[\u4e00-\u9fa5]{2,}', existing_name))
+                    # 如果有超过50%的关键词重叠，合并
+                    if name_keywords and existing_keywords:
+                        overlap = len(name_keywords & existing_keywords) / len(name_keywords | existing_keywords)
+                        if overlap > 0.5:
+                            # 合并到更长的名称
+                            if len(name) > len(existing_name):
+                                merged_options[name] = merged_options.pop(existing_name)
+                                merged_options[name]["ids"].update(opt["ids"])
+                                merged_options[name]["count"] = len(merged_options[name]["ids"])
+                            else:
+                                merged_options[existing_name]["ids"].update(opt["ids"])
+                                merged_options[existing_name]["count"] = len(merged_options[existing_name]["ids"])
+                            merged = True
+                            break
+                if not merged:
+                    merged_options[name] = {"name": name, "ids": set(opt["ids"]), "count": opt["count"]}
+            
+            # 转换回列表格式
+            options = []
+            for name, data in merged_options.items():
+                options.append({
+                    "name": name,
+                    "count": data["count"],
+                    "ids": sorted(data["ids"]) if isinstance(data["ids"], set) else data["ids"]
+                })
+            options.sort(key=lambda x: x["count"], reverse=True)
+        
+        return options[:max_options * 2]  # 返回更多选项，让_finalize_options_with_ids处理截断
+    
+    def _merge_filename_prefixes(
+        self,
+        results: List[ScoredResult],
+        options: List[Dict],
+        max_options: int = 5
+    ) -> Optional[List[Dict]]:
+        """
+        合并文件名前缀，减少选项数量
+        从左到右匹配相同的前缀部分，将相似的文件名合并
+        
+        例如：
+        - "柳汽乘龙H7..." (3个结果)
+        - "柳汽_乘龙H72D..." (1个结果)
+        - "柳汽_乘龙H72S..." (1个结果)
+        可以合并为 "柳汽乘龙H7" 系列 (5个结果)
+        
+        Args:
+            results: 搜索结果列表
+            options: 选项列表（格式：[{"name": "文件名", "count": 数量, "ids": [id列表]}, ...]）
+            max_options: 最大选项数量
+            
+        Returns:
+            合并后的选项列表，如果无法合并则返回None
+        """
+        import re
+        from collections import defaultdict
+        
+        print(f"🔍 _merge_filename_prefixes 被调用: options数量={len(options) if options else 0}")
+        if not options or len(options) < 10:
+            print(f"⚠️ 选项数量不足10，跳过合并: {len(options) if options else 0}")
+            return None
+        
+        # 获取所有文件名和对应的ids
+        name_to_ids = {}
+        name_to_count = {}
+        for option in options:
+            name = option.get("name", "")
+            if name:
+                ids = option.get("ids", [])
+                if ids:
+                    name_to_ids[name] = set(ids)
+                    name_to_count[name] = len(ids)
+                else:
+                    # 如果没有ids，从results中查找
+                    count = option.get("count", 0)
+                    for result in results:
+                        if result.diagram.file_name == name:
+                            name_to_ids.setdefault(name, set()).add(result.diagram.id)
+                            name_to_count[name] = count or 1
+        
+        file_names = list(name_to_ids.keys())
+        if not file_names:
+            return None
+        
+        # 去除文件扩展名
+        def remove_ext(name: str) -> str:
+            return re.sub(r'\.[A-Z]{2,5}$', '', name, flags=re.IGNORECASE)
+        
+        # 规范化文件名用于前缀比较（去除分隔符，但保留字符顺序）
+        def normalize_for_comparison(name: str) -> str:
+            name = remove_ext(name)
+            # 将下划线、连字符、空格等统一去除，但保留字符顺序
+            name = re.sub(r'[_\-\s]+', '', name)
+            return name
+        
+        # 从左到右查找公共前缀（基于规范化后的名称）
+        def find_common_prefix_normalized(names: List[str], min_length: int = 3) -> Optional[str]:
+            if not names:
+                return None
+            
+            normalized = [normalize_for_comparison(n) for n in names]
+            if not normalized:
+                return None
+            
+            # 找到最短的名称作为基准
+            shortest = min(normalized, key=len)
+            if len(shortest) < min_length:
+                return None
+            
+            # 从左到右查找公共前缀长度
+            prefix_len = 0
+            for i in range(len(shortest)):
+                char = shortest[i]
+                if all(n[i] == char for n in normalized if i < len(n)):
+                    prefix_len = i + 1
+                else:
+                    break
+            
+            if prefix_len < min_length:
+                return None
+            
+            # 对于中文+字母+数字的组合（如"柳汽乘龙H7"），确保至少包含一个完整的词
+            # 检查前缀是否包含至少一个中文字符
+            prefix_chars = shortest[:prefix_len]
+            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in prefix_chars)
+            if not has_chinese and prefix_len < 5:
+                # 如果没有中文字符且长度较短，可能需要更长的前缀
+                return None
+            
+            # 将规范化后的前缀映射回原始名称
+            # 使用第一个名称，找到对应长度的前缀
+            original_name = names[0]
+            normalized_first = normalize_for_comparison(original_name)
+            
+            # 计算原始名称中对应的前缀位置
+            # 由于规范化去除了分隔符，需要找到原始名称中对应字符的位置
+            char_count = 0
+            prefix_end = 0
+            for i, char in enumerate(original_name):
+                if char not in '_- \t\n\r':
+                    char_count += 1
+                    if char_count >= prefix_len:
+                        prefix_end = i + 1
+                        break
+            
+            if prefix_end == 0:
+                return None
+            
+            prefix = original_name[:prefix_end]
+            # 尝试在合适的位置截断（优先在分隔符处，但不要截断太短）
+            for sep in ["_", "-", " ", "【", "("]:
+                sep_pos = prefix.rfind(sep)
+                if sep_pos >= min_length // 2:  # 确保前缀不会太短
+                    prefix = prefix[:sep_pos + len(sep)]
+                    break
+            
+            return prefix.rstrip('_ -【（')
+        
+        # 分组策略：按前缀分组
+        merged_groups: Dict[str, List[str]] = defaultdict(list)
+        remaining_names = set(file_names)
+        
+        # 按规范化后的长度排序，从长到短处理
+        sorted_names = sorted(file_names, key=lambda x: len(normalize_for_comparison(x)), reverse=True)
+        
+        processed = set()
+        for name in sorted_names:
+            if name in processed:
+                continue
+            
+            # 查找可以与此名称合并的其他名称
+            candidates = [name]
+            
+            # 查找其他可以合并的名称
+            for other_name in remaining_names:
+                if other_name == name or other_name in processed:
+                    continue
+                
+                # 检查是否有足够长的公共前缀
+                common_prefix = find_common_prefix_normalized([name, other_name], min_length=3)
+                if common_prefix:
+                    # 检查规范化后的名称是否共享足够长的前缀
+                    norm_name = normalize_for_comparison(name)
+                    norm_other = normalize_for_comparison(other_name)
+                    min_len = min(len(norm_name), len(norm_other))
+                    if min_len >= 3:
+                        # 检查前3个字符是否相同（降低要求，以便更好地合并）
+                        if norm_name[:min(3, len(norm_name))] == norm_other[:min(3, len(norm_other))]:
+                            candidates.append(other_name)
+            
+            # 如果找到多个可以合并的名称
+            if len(candidates) > 1:
+                # 找到这些名称的公共前缀
+                common_prefix = find_common_prefix_normalized(candidates, min_length=3)
+                if common_prefix and len(common_prefix) >= 3:
+                    group_key = common_prefix + "系列"
+                    merged_groups[group_key].extend(candidates)
+                    processed.update(candidates)
+                    remaining_names -= set(candidates)
+            else:
+                processed.add(name)
+        
+        # 如果成功合并了一些名称，创建新的选项列表
+        if merged_groups:
+            merged_options = []
+            
+            # 添加合并后的分组
+            for group_name, names_in_group in merged_groups.items():
+                all_ids = set()
+                total_count = 0
+                for name in names_in_group:
+                    ids = name_to_ids.get(name, set())
+                    all_ids.update(ids)
+                    total_count += name_to_count.get(name, len(ids))
+                
+                if all_ids:
+                    merged_options.append({
+                        "name": group_name,
+                        "count": len(all_ids),
+                        "ids": sorted(all_ids)
+                    })
+            
+            # 添加未合并的单独名称
+            for name in remaining_names:
+                ids = name_to_ids.get(name, set())
+                count = name_to_count.get(name, len(ids))
+                if ids:
+                    merged_options.append({
+                        "name": remove_ext(name),
+                        "count": count,
+                        "ids": sorted(ids)
+                    })
+            
+            # 按数量降序排序
+            merged_options.sort(key=lambda x: x["count"], reverse=True)
+            
+            # 如果合并后选项数量减少且>=2，返回合并后的选项
+            if len(merged_options) < len(options) and len(merged_options) >= 2:
+                return merged_options[:max_options * 2]  # 返回更多选项，让_finalize_options_with_ids处理
+        
+        return None
+    
     def _extract_type_variants(
         self,
         results: List[ScoredResult],
@@ -1125,8 +1710,18 @@ class QuestionService:
                 return f"明白了。请问您需要的是哪种型号："
             elif option_type == "type":
                 return f"明白了。请问您需要的是哪种类型的仪表电路图："
+            elif option_type == "document_category":
+                return f"明白了。请问您需要的是哪一份资料："
             else:
                 return f"明白了。请选择您需要的选项："
+        
+        # 文档主题分类的默认问题文本
+        if option_type == "document_category":
+            return f"明白了。请问您需要的是哪一份资料："
+        
+        # 文件名前缀合并的问题文本
+        if option_type == "filename_prefix":
+            return f"明白了。请问您需要的是哪一份资料："
         
         return f"我找到了相关电路图。请问您需要的是："
     
