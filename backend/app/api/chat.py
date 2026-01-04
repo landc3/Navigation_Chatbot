@@ -22,6 +22,7 @@ from backend.app.models.conversation import (
 )
 from backend.app.utils.hierarchy_util import HierarchyUtil
 from backend.app.utils.variant_util import variant_key_for_query
+from backend.app.utils.option_merge_util import merge_similar_options
 
 router = APIRouter()
 
@@ -100,6 +101,53 @@ def _filter_out_noop_options(options: List[Dict[str, Any]], all_ids: set) -> Lis
         if isinstance(ids, list) and ids and set(ids) == all_ids:
             continue
         out.append(o)
+    return out
+
+
+def _dedup_exact_filename_options(raw_options: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    仅对“文件级”选项做严格去重（规范化后完全相等才合并）。
+    用于“展开资料分组后的第二步”，避免再次被 50% 相似合并压回单个选项导致不收敛。
+    """
+    if not raw_options:
+        return []
+
+    def norm(s: str) -> str:
+        s = str(s or "").strip()
+        s = re.sub(r"\s+", "", s)
+        s = re.sub(r"\.(docx|doc|pdf|pptx|ppt|xlsx|xls)$", "", s, flags=re.IGNORECASE)
+        return s
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for opt in raw_options:
+        name = opt.get("name") or ""
+        key = norm(name)
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = {"name": re.sub(r"\.(docx|doc|pdf|pptx|ppt|xlsx|xls)$", "", str(name).strip(), flags=re.IGNORECASE)}
+            order.append(key)
+        # collect ids
+        m = merged[key]
+        ids = m.get("ids")
+        if not isinstance(ids, list):
+            ids = []
+            m["ids"] = ids
+        if isinstance(opt.get("ids"), list):
+            ids.extend(opt.get("ids") or [])
+        elif opt.get("id") is not None:
+            ids.append(opt.get("id"))
+
+    out: List[Dict[str, Any]] = []
+    for key in order:
+        m = merged[key]
+        ids = list(dict.fromkeys(m.get("ids") or []))  # preserve order, unique
+        if len(ids) <= 1:
+            # single
+            out.append({"name": m.get("name"), "id": ids[0] if ids else None, "count": 1, "type": "result"})
+        else:
+            out.append({"name": m.get("name"), "ids": ids, "count": len(ids), "type": "result"})
     return out
 
 
@@ -398,6 +446,9 @@ async def chat(request: ChatRequest):
                     conv_state.add_filter("result", option_value or user_input_upper)
                     # 直接选择某一份资料（文件）
                     target_id = selected_option.get("id")
+                    # 如果选中了“合并后的资料分组”（ids>1），下一轮强制展开到具体文件列表（只做严格去重）
+                    if isinstance(opt_ids, list) and len(opt_ids) > 1:
+                        conv_state.expand_result_group_next = True
                     if target_id is not None:
                         filtered_results = [r for r in (filtered_results or []) if r.diagram.id == target_id]
                 elif option_type == "document_category":
@@ -900,7 +951,6 @@ async def chat(request: ChatRequest):
                         "- 或者减少一个限定词再试\n\n"
                         f"同时已为您扩大范围（去掉不匹配关键字{removed_txt}），"
                         f"已为您找到“{phrase}”相关数据，是否需要？\n"
-                        "回复需要就可以进行选择逻辑"
                     )
                     conv_state.search_results = relaxed
                     conv_state.relax_meta = meta
@@ -1024,17 +1074,54 @@ async def chat(request: ChatRequest):
         question_data = None
         choose_file_threshold = max(max_results, 15)
         if force_choose and total_found <= choose_file_threshold:
-            # 选项标签按需扩展，避免 max_results > 5 时越界
-            option_labels = question_service._make_option_labels(min(choose_file_threshold, len(scored_results)))
+            # 先构造原始“文件级”选项，再在必要时做相似合并（避免 A/B 这种明显重复）
+            raw_options = []
+            for r in scored_results[:choose_file_threshold]:
+                raw_options.append(
+                    {
+                        "name": r.diagram.file_name,
+                        "count": 1,
+                        "type": "result",
+                        "id": r.diagram.id,
+                    }
+                )
+            original_raw_options = list(raw_options)
+
+            if getattr(conv_state, "expand_result_group_next", False):
+                # 用户刚刚选择了某个“合并后的资料分组”，这里要展开到组内的具体文件列表，
+                # 只做严格去重（规范化后完全相等才合并），避免不收敛循环。
+                raw_options = _dedup_exact_filename_options(raw_options)
+                conv_state.expand_result_group_next = False
+            else:
+                # 当选项数 > 5 时才启用合并；相似度阈值 0.5（约等于“50%+ 字符相同”）
+                raw_options = merge_similar_options(
+                    raw_options,
+                    enabled_min_len=6,
+                    similarity_threshold=0.5,
+                    name_key="name",
+                )
+                # 若相似合并把列表“压扁”成只剩 1 个选项，这一轮没有选择价值，会导致多一次无效点击；
+                # 回退为“仅严格去重”的文件级列表。
+                if len(raw_options) == 1 and len(original_raw_options) >= 2:
+                    raw_options = _dedup_exact_filename_options(original_raw_options)
+
+            option_labels = question_service._make_option_labels(len(raw_options))
             formatted_options = []
-            for i, r in enumerate(scored_results[:choose_file_threshold]):
-                formatted_options.append({
+            for i, opt in enumerate(raw_options):
+                out = {
                     "label": option_labels[i],
-                    "name": r.diagram.file_name,
-                    "count": 1,
+                    "name": opt.get("name"),
                     "type": "result",
-                    "id": r.diagram.id,
-                })
+                }
+                # merged bucket carries ids；单个文件保留 id（兼容旧逻辑）
+                opt_ids = opt.get("ids")
+                if isinstance(opt_ids, list) and opt_ids:
+                    out["ids"] = opt_ids
+                    out["count"] = len(opt_ids)
+                else:
+                    out["count"] = 1
+                    out["id"] = opt.get("id")
+                formatted_options.append(out)
             question_data = {
                 "question": "明白了。请问您需要的是哪一份资料：",
                 "options": formatted_options,
@@ -1055,6 +1142,45 @@ async def chat(request: ChatRequest):
         
         if question_data:
             print(f"✅ 成功生成选择题，选项数: {len(question_data.get('options', []))}")
+            # 关键修复：若本轮只有 1 个选项（无信息增量），直接展开到文件级列表，
+            # 避免出现“只有 A 还要再点一次”的体验。
+            opts = question_data.get("options") or []
+            if len(opts) == 1:
+                only = opts[0] or {}
+                only_ids = only.get("ids")
+                candidates = scored_results
+                if isinstance(only_ids, list) and only_ids:
+                    try:
+                        id_set = {int(x) for x in only_ids}
+                    except Exception:
+                        id_set = set(only_ids)
+                    candidates = [r for r in (scored_results or []) if r.diagram.id in id_set]
+
+                choose_file_threshold2 = max(max_results, 15)
+                raw2 = []
+                for r in (candidates or [])[:choose_file_threshold2]:
+                    raw2.append({"name": r.diagram.file_name, "count": 1, "type": "result", "id": r.diagram.id})
+                raw2 = _dedup_exact_filename_options(raw2)
+
+                rest = (candidates or [])[choose_file_threshold2:]
+                if rest:
+                    rest_ids = [r.diagram.id for r in rest]
+                    raw2.append({"name": "其他（未展示）", "ids": rest_ids, "count": len(rest_ids), "type": "result"})
+
+                labels2 = question_service._make_option_labels(len(raw2))
+                formatted2 = []
+                for i, opt in enumerate(raw2):
+                    out = {"label": labels2[i], "name": opt.get("name"), "type": "result"}
+                    opt_ids = opt.get("ids")
+                    if isinstance(opt_ids, list) and opt_ids:
+                        out["ids"] = opt_ids
+                        out["count"] = len(opt_ids)
+                    else:
+                        out["count"] = 1
+                        out["id"] = opt.get("id")
+                    formatted2.append(out)
+                question_data = {"question": "明白了。请问您需要的是哪一份资料：", "options": formatted2, "option_type": "result"}
+
             # 更新对话状态
             conv_state.update_state(ConversationStateEnum.NEEDS_CHOICE)
             conv_state.current_options = question_data['options']

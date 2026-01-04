@@ -10,6 +10,7 @@ from backend.app.models.types import ScoredResult, rebuild_scored_result_model
 from backend.app.services.search_service import get_search_service
 from backend.app.services.llm_service import get_llm_service
 from backend.app.utils.category_pattern_loader import get_pattern_loader
+from backend.app.utils.option_merge_util import merge_similar_options
 
 # 确保 ScoredResult 模型已重建（解决前向引用问题）
 rebuild_scored_result_model()
@@ -81,9 +82,16 @@ class QuestionService:
         if not results or len(results) < min_options:
             return None
         
-        # 优先尝试文档主题分类（当结果数量较多时，可以按文档主题/类别进行分类）
+        # 优先尝试文档主题分类（当结果数量较多且查询更像“主题词”而不是“车型系列/ECU代号”时）
         # 例如："VGT执行器"、"解放动力"、"龙擎动力"、"涡轮增压器"等
-        if len(results) >= 6:  # 当结果数量>=6时，优先尝试文档主题分类
+        #
+        # 注意：若查询形如“天龙KL电路图”“欧曼ETX...”或“C81电路图”这类更像“车型系列/ECU代号”的场景，
+        # 应优先走 variant 分组（已有回归测试覆盖），避免被 document_category 抢占首轮问题类型。
+        current_query = (context or {}).get("current_query") or ""
+        has_ecu_code = bool(re.search(r"[A-Za-z]{1,6}\d{1,3}", current_query))
+        looks_like_cn_plus_series = bool(re.search(r"[\u4e00-\u9fff]{1,8}[A-Z]{2,4}", current_query))
+
+        if len(results) >= 6 and not (has_ecu_code or looks_like_cn_plus_series):
             doc_category_options = self._extract_document_category_options(results, max_options=max_options)
             print(f"🔍 文档类别提取结果: {len(doc_category_options) if doc_category_options else 0} 个选项")
             if doc_category_options and len(doc_category_options) >= min_options:
@@ -325,6 +333,16 @@ class QuestionService:
                 else:
                     question_text = self._generate_question_text(option_type, len(results), context)
                 
+                # 仅对“文件名类”选项做相似合并：避免明显重复/仅细节差异的条目刷屏
+                # 注意：不强行把数量压到 <= 5；只在 options 足够多时启用（>5）
+                if option_type in ("document_category", "filename_prefix") and len(options) >= 6:
+                    options = merge_similar_options(
+                        options,
+                        enabled_min_len=6,
+                        similarity_threshold=0.5,
+                        name_key="name",
+                    )
+
                 option_labels = self._make_option_labels(min(max_options, len(options)))
                 formatted_options = []
                 for i, option in enumerate(options[:max_options]):
@@ -362,6 +380,13 @@ class QuestionService:
             # 尝试合并文件名前缀
             merged_options = self._merge_filename_prefixes(results, filename_options, max_options=max_options)
             if merged_options and len(merged_options) >= min_options:
+                if len(merged_options) >= 6:
+                    merged_options = merge_similar_options(
+                        merged_options,
+                        enabled_min_len=6,
+                        similarity_threshold=0.5,
+                        name_key="name",
+                    )
                 question_text = self._generate_question_text("filename_prefix", len(results), context)
                 option_labels = self._make_option_labels(min(max_options, len(merged_options)))
                 formatted_options = []

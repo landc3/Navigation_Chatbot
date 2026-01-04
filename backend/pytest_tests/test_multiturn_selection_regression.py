@@ -233,3 +233,83 @@ def test_option_count_matches_ids_and_never_increases(monkeypatch):
     assert post_n <= pre_n
 
 
+def test_single_option_choice_is_bypassed_and_expands_to_file_list(monkeypatch):
+    """
+    回归：当选择题只生成 1 个选项时（无信息增量），不应要求用户再点一次；
+    /api/chat 应直接展开到“文件级列表”供用户选择。
+    """
+    from backend.app.api import chat as chat_api
+    from backend.app.models.conversation import get_conversation_manager
+
+    class StubLLM:
+        def parse_intent(self, q):
+            return None
+
+        def generate_question_text(self, *args, **kwargs):
+            return "请选择："
+
+    class StubSearch:
+        def __init__(self):
+            self._all = [_mk_result(i, file_name=f"江淮_康铃{i}_保险盒定义_{i}.DOCX") for i in range(1, 15)]
+
+        def search(self, *args, **kwargs):
+            return list(self._all)
+
+        def deduplicate_results(self, results):
+            return results
+
+        def strict_filename_and_stats(self, *args, **kwargs):
+            return {"and_count": 1, "term_counts": {}}
+
+        def filter_by_hierarchy(self, results, brand=None, model=None, diagram_type=None, vehicle_category=None):
+            return list(results)
+
+    class StubQuestion:
+        @staticmethod
+        def _make_option_labels(n: int):
+            import string
+
+            letters = string.ascii_uppercase
+            out = []
+            for i in range(n):
+                out.append(letters[i] if i < 26 else f"A{letters[i - 26]}")
+            return out
+
+        def generate_question(self, results, *args, **kwargs):
+            # 故意返回“只有一个桶”的选择题（覆盖全部 ids）
+            return {
+                "question": "明白了。请问您需要的是哪一份资料：",
+                "option_type": "filename_prefix",
+                "options": [
+                    {
+                        "label": "A",
+                        "name": "江淮_康铃1_保险盒定义",
+                        "type": "filename_prefix",
+                        "count": len(results),
+                        "ids": [r.diagram.id for r in results],
+                    }
+                ],
+            }
+
+        def format_question_message(self, question_data):
+            lines = [question_data.get("question", "").strip()]
+            for opt in question_data.get("options", []):
+                lines.append(f"{opt.get('label')}. {opt.get('name')}（{opt.get('count')}个结果）")
+            return "\n".join([x for x in lines if x])
+
+    monkeypatch.setattr(chat_api, "get_search_service", lambda: StubSearch())
+    monkeypatch.setattr(chat_api, "get_llm_service", lambda: StubLLM())
+    monkeypatch.setattr(chat_api, "get_question_service", lambda: StubQuestion())
+
+    cm = get_conversation_manager()
+    sid = "reg-single-opt"
+    cm.clear_conversation(sid)
+
+    out = asyncio.run(chat_api.chat(chat_api.ChatRequest(message="庆铃保险盒盒图", session_id=sid, max_results=5)))
+    assert out.needs_choice is True
+    assert out.options is not None
+    # should have expanded to multiple file-level options (not a single one)
+    assert len(out.options) >= 2
+    assert all(o.get("type") == "result" for o in out.options)
+
+

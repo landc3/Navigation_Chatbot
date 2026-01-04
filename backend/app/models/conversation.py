@@ -70,6 +70,13 @@ class ConversationState(BaseModel):
         description="放宽搜索元信息（用于确认/调试）",
         exclude=True,
     )
+    # 内部标记：当用户选中了“合并后的资料分组”（result option with ids>1）后，
+    # 下一轮应展开到组内“具体文件列表”，避免再次被相似合并压回单个选项导致不收敛循环。
+    expand_result_group_next: bool = Field(
+        False,
+        description="下一轮是否展开资料分组到具体文件列表",
+        exclude=True,
+    )
     state_history: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="状态历史记录，用于支持返回上一步功能",
