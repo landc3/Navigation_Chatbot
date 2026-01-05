@@ -1,4 +1,5 @@
-FROM node:18-alpine AS build
+# 使用阿里云镜像源
+FROM registry.cn-hangzhou.aliyuncs.com/library/node:18-alpine AS build
 
 WORKDIR /app
 
@@ -8,7 +9,8 @@ RUN npm ci
 COPY frontend/ /app/
 RUN npm run build
 
-FROM nginx:alpine
+# 使用阿里云镜像源
+FROM registry.cn-hangzhou.aliyuncs.com/library/nginx:alpine
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
