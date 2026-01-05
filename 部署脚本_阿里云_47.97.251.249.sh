@@ -3,7 +3,8 @@
 # 服务器IP: 47.97.251.249
 # 项目地址: https://github.com/landc3/Navigation_Chatbot.git
 
-set -e  # 遇到错误立即退出
+# 不立即退出，允许错误处理
+set +e
 
 echo "=========================================="
 echo "🚀 Navigation_Chatbot 部署脚本"
@@ -24,13 +25,56 @@ fi
 
 echo -e "${GREEN}✅ 检查系统环境...${NC}"
 
+# 自动检测系统类型和包管理器
+detect_package_manager() {
+    if command -v apt &> /dev/null; then
+        PKG_MANAGER="apt"
+        UPDATE_CMD="apt update"
+        UPGRADE_CMD="apt upgrade -y"
+        INSTALL_CMD="apt install -y"
+    elif command -v yum &> /dev/null; then
+        PKG_MANAGER="yum"
+        UPDATE_CMD="yum update -y"
+        UPGRADE_CMD="yum upgrade -y"
+        INSTALL_CMD="yum install -y"
+    elif command -v dnf &> /dev/null; then
+        PKG_MANAGER="dnf"
+        UPDATE_CMD="dnf update -y"
+        UPGRADE_CMD="dnf upgrade -y"
+        INSTALL_CMD="dnf install -y"
+    else
+        echo -e "${RED}❌ 无法检测包管理器，请手动安装依赖${NC}"
+        exit 1
+    fi
+    
+    # 显示检测到的系统信息
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo -e "${GREEN}✅ 检测到系统: $PRETTY_NAME${NC}"
+    fi
+    echo -e "${GREEN}✅ 使用包管理器: $PKG_MANAGER${NC}"
+}
+
+# 检测包管理器
+detect_package_manager
+
 # 更新系统
 echo -e "${YELLOW}📦 更新系统包...${NC}"
-apt update && apt upgrade -y
+$UPDATE_CMD
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}⚠️  系统更新失败，继续执行...${NC}"
+fi
 
 # 安装必要工具
 echo -e "${YELLOW}📦 安装必要工具...${NC}"
-apt install -y git curl wget unzip
+$INSTALL_CMD git curl wget unzip
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ 安装必要工具失败${NC}"
+    exit 1
+fi
+
+# 重新启用错误退出
+set -e
 
 # 检查并安装Docker
 if ! command -v docker &> /dev/null; then
