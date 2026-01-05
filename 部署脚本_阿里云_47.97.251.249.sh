@@ -67,7 +67,7 @@ fi
 
 # 安装必要工具
 echo -e "${YELLOW}📦 安装必要工具...${NC}"
-$INSTALL_CMD git curl wget unzip
+$INSTALL_CMD git curl wget unzip nano
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ 安装必要工具失败${NC}"
     exit 1
@@ -256,21 +256,51 @@ cd /root
 git clone https://github.com/landc3/Navigation_Chatbot.git
 cd "$PROJECT_DIR"
 
+# 查找可用的文本编辑器
+find_editor() {
+    if command -v nano &> /dev/null; then
+        echo "nano"
+    elif command -v vim &> /dev/null; then
+        echo "vim"
+    elif command -v vi &> /dev/null; then
+        echo "vi"
+    else
+        echo ""
+    fi
+}
+
 # 配置环境变量
 echo -e "${YELLOW}⚙️  配置环境变量...${NC}"
 if [ ! -f .env ]; then
     if [ -f env.example ]; then
         cp env.example .env
         echo -e "${YELLOW}⚠️  请编辑 .env 文件，设置 ALI_QWEN_API_KEY${NC}"
-        echo -e "${YELLOW}   使用命令: nano $PROJECT_DIR/.env${NC}"
+        
+        EDITOR=$(find_editor)
+        if [ -z "$EDITOR" ]; then
+            echo -e "${RED}❌ 未找到文本编辑器（nano/vim/vi），请手动安装${NC}"
+            echo -e "${YELLOW}   安装nano: $INSTALL_CMD nano${NC}"
+            echo -e "${YELLOW}   然后手动编辑: $PROJECT_DIR/.env${NC}"
+            exit 1
+        fi
+        
+        echo -e "${YELLOW}   使用编辑器: $EDITOR${NC}"
+        echo -e "${YELLOW}   文件路径: $PROJECT_DIR/.env${NC}"
         echo ""
         read -p "是否现在编辑 .env 文件? (y/n): " edit_now
         if [ "$edit_now" = "y" ] || [ "$edit_now" = "Y" ]; then
-            nano .env
+            $EDITOR .env
+            if [ $? -ne 0 ]; then
+                echo -e "${YELLOW}⚠️  编辑器退出，请检查是否已保存${NC}"
+            fi
         else
-            echo -e "${RED}❌ 请稍后手动编辑 .env 文件后再运行部署${NC}"
-            echo -e "${YELLOW}   文件路径: $PROJECT_DIR/.env${NC}"
-            exit 1
+            echo -e "${YELLOW}⚠️  请稍后手动编辑 .env 文件${NC}"
+            echo -e "${YELLOW}   使用命令: $EDITOR $PROJECT_DIR/.env${NC}"
+            echo -e "${YELLOW}   或使用: cat > $PROJECT_DIR/.env << 'EOF'${NC}"
+            echo -e "${YELLOW}   ALI_QWEN_API_KEY=sk-你的密钥${NC}"
+            echo -e "${YELLOW}   EOF${NC}"
+            echo ""
+            read -p "按Enter继续（确保已配置API密钥）..." dummy
         fi
     else
         echo -e "${RED}❌ 未找到 env.example 文件${NC}"
@@ -283,7 +313,14 @@ fi
 # 检查API密钥是否配置
 if grep -q "sk-your-api-key-here" .env 2>/dev/null || ! grep -q "ALI_QWEN_API_KEY=sk-" .env 2>/dev/null; then
     echo -e "${RED}❌ 请先配置 ALI_QWEN_API_KEY 在 .env 文件中${NC}"
-    echo -e "${YELLOW}   使用命令: nano $PROJECT_DIR/.env${NC}"
+    EDITOR=$(find_editor)
+    if [ -n "$EDITOR" ]; then
+        echo -e "${YELLOW}   使用命令: $EDITOR $PROJECT_DIR/.env${NC}"
+    else
+        echo -e "${YELLOW}   文件路径: $PROJECT_DIR/.env${NC}"
+        echo -e "${YELLOW}   使用以下命令设置API密钥:${NC}"
+        echo -e "${YELLOW}   echo 'ALI_QWEN_API_KEY=sk-你的密钥' > $PROJECT_DIR/.env${NC}"
+    fi
     exit 1
 fi
 
