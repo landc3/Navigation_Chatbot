@@ -14,3 +14,5 @@ def test_sanitize_diagram_type_drops_unknown_type():
     assert extra == []
 
 
+
+

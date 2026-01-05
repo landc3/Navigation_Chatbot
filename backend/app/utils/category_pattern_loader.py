@@ -142,3 +142,5 @@ def get_pattern_loader() -> CategoryPatternLoader:
         _pattern_loader_instance = CategoryPatternLoader()
     return _pattern_loader_instance
 
+
+

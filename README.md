@@ -151,21 +151,70 @@ MIT License
 
 ## 🚢 部署（生产环境）
 
-### 方案A：Docker 一键部署（推荐）
+### 🌐 阿里云服务器部署
+
+#### 前置准备
+1. **购买阿里云ECS服务器**（推荐配置：2核4G）
+2. **配置安全组规则**：
+   - 端口 80：HTTP前端访问
+   - 端口 8000：后端API
+   - 端口 22：SSH远程管理（建议只开放你的IP）
+
+#### 快速部署（使用GitHub仓库）
+
+**GitHub仓库地址**: https://github.com/landc3/Navigation_Chatbot.git
+
+**完整部署步骤**：查看 [远程服务器部署指南.md](远程服务器部署指南.md)
+
+**快速命令（Windows Server）：**
+```powershell
+# 1. 远程连接到服务器（使用RDP）
+mstsc /v:101.37.89.207
+
+# 2. 在服务器上克隆仓库
+cd C:\
+git clone https://github.com/landc3/Navigation_Chatbot.git
+cd Navigation_Chatbot
+
+# 3. 配置环境变量
+Copy-Item env.example .env
+notepad .env  # 编辑并填入你的API密钥
+
+# 4. 启动Docker容器
+docker compose up --build -d
+
+# 5. 验证部署
+docker ps
+```
+
+#### 详细部署指南
+- **Windows Server 2022（推荐）**：查看 [远程服务器部署指南.md](远程服务器部署指南.md)
+- **Ubuntu Linux**：查看 [部署指南_Ubuntu_Linux.md](部署指南_Ubuntu_Linux.md)
+
+#### 部署完成后的访问地址
+- **前端应用**：`http://<你的公网IP>`
+- **后端API**：`http://<你的公网IP>:8000`
+- **API文档**：`http://<你的公网IP>:8000/docs`
+
+---
+
+### 本地Docker部署
+
+#### 方案A：Docker 一键部署（推荐）
 
 - **前置**：安装 Docker / Docker Compose
 - **配置**：在宿主机环境变量或 `.env` 中设置 `ALI_QWEN_API_KEY`
 - **启动**：
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 - **访问**：
   - **前端**：`http://localhost`（Nginx 静态托管 + `/api` 反代）
   - **后端**：`http://localhost:8000`
 
-### 方案B：本地生产构建
+#### 方案B：本地生产构建
 
 - **Windows PowerShell**：
 
