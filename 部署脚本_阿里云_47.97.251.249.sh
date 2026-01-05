@@ -77,24 +77,168 @@ fi
 set -e
 
 # 检查并安装Docker
-if ! command -v docker &> /dev/null; then
+install_docker() {
+    if command -v docker &> /dev/null; then
+        echo -e "${GREEN}✅ Docker已安装: $(docker --version)${NC}"
+        return 0
+    fi
+    
     echo -e "${YELLOW}🐳 安装Docker...${NC}"
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker
-    systemctl start docker
-    echo -e "${GREEN}✅ Docker安装完成${NC}"
+    
+    # 方法1：使用yum/dnf直接安装（推荐，适用于阿里云服务器）
+    if [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
+        echo -e "${YELLOW}   尝试使用 $PKG_MANAGER 安装Docker...${NC}"
+        
+        # 安装Docker依赖
+        $INSTALL_CMD yum-utils device-mapper-persistent-data lvm2
+        
+        # 添加Docker官方yum源（如果网络允许）
+        if curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo 2>/dev/null; then
+            $INSTALL_CMD docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            if [ $? -eq 0 ]; then
+                systemctl enable docker
+                systemctl start docker
+                echo -e "${GREEN}✅ Docker安装完成（使用官方源）${NC}"
+                return 0
+            fi
+        fi
+        
+        # 如果官方源失败，尝试使用阿里云镜像源
+        echo -e "${YELLOW}   尝试使用阿里云镜像源安装Docker...${NC}"
+        
+        # 配置阿里云Docker镜像源
+        cat > /etc/yum.repos.d/docker-ce.repo << 'EOF'
+[docker-ce-stable]
+name=Docker CE Stable - $basearch
+baseurl=https://mirrors.aliyun.com/docker-ce/linux/centos/$releasever/$basearch/stable
+enabled=1
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/docker-ce/linux/centos/gpg
+EOF
+        
+        # 清理缓存并安装
+        $PKG_MANAGER clean all
+        $INSTALL_CMD docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        
+        if [ $? -eq 0 ]; then
+            systemctl enable docker
+            systemctl start docker
+            echo -e "${GREEN}✅ Docker安装完成（使用阿里云镜像源）${NC}"
+            return 0
+        fi
+    fi
+    
+    # 方法2：使用get.docker.com脚本（备选方案）
+    echo -e "${YELLOW}   尝试使用官方安装脚本...${NC}"
+    
+    # 设置不验证SSL（仅用于安装脚本）
+    export DOCKER_OPTS="--insecure-registry"
+    
+    # 尝试使用get.docker.com，如果失败则使用阿里云镜像
+    if curl -fsSL https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null; then
+        bash /tmp/get-docker.sh --mirror Aliyun
+    else
+        # 如果curl失败，尝试使用wget
+        if command -v wget &> /dev/null; then
+            wget -O /tmp/get-docker.sh https://get.docker.com --no-check-certificate 2>/dev/null
+            if [ $? -eq 0 ]; then
+                bash /tmp/get-docker.sh --mirror Aliyun
+            else
+                echo -e "${RED}❌ 无法下载Docker安装脚本${NC}"
+                return 1
+            fi
+        else
+            echo -e "${RED}❌ 无法下载Docker安装脚本（curl和wget都不可用）${NC}"
+            return 1
+        fi
+    fi
+    
+    if [ $? -eq 0 ]; then
+        systemctl enable docker
+        systemctl start docker
+        echo -e "${GREEN}✅ Docker安装完成${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Docker安装失败${NC}"
+        echo -e "${YELLOW}   请手动安装Docker，参考: https://docs.docker.com/engine/install/${NC}"
+        return 1
+    fi
+}
+
+# 执行Docker安装
+install_docker
+
+# 验证Docker安装
+if command -v docker &> /dev/null; then
+    docker --version
 else
-    echo -e "${GREEN}✅ Docker已安装: $(docker --version)${NC}"
+    echo -e "${RED}❌ Docker安装失败，请检查错误信息${NC}"
+    exit 1
 fi
 
 # 检查并安装Docker Compose
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+install_docker_compose() {
+    # 检查是否已安装（新版本Docker包含compose插件）
+    if docker compose version &> /dev/null; then
+        echo -e "${GREEN}✅ Docker Compose已安装（作为Docker插件）: $(docker compose version)${NC}"
+        return 0
+    fi
+    
+    # 检查旧版本docker-compose命令
+    if command -v docker-compose &> /dev/null; then
+        echo -e "${GREEN}✅ Docker Compose已安装: $(docker-compose --version)${NC}"
+        return 0
+    fi
+    
     echo -e "${YELLOW}🐳 安装Docker Compose...${NC}"
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    echo -e "${GREEN}✅ Docker Compose安装完成${NC}"
+    
+    # 方法1：使用curl下载（优先）
+    COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)"
+    
+    if curl -L "$COMPOSE_URL" -o /usr/local/bin/docker-compose 2>/dev/null; then
+        chmod +x /usr/local/bin/docker-compose
+        if docker-compose --version &> /dev/null; then
+            echo -e "${GREEN}✅ Docker Compose安装完成${NC}"
+            return 0
+        fi
+    fi
+    
+    # 方法2：使用wget下载（备选）
+    if command -v wget &> /dev/null; then
+        echo -e "${YELLOW}   尝试使用wget下载...${NC}"
+        if wget "$COMPOSE_URL" -O /usr/local/bin/docker-compose --no-check-certificate 2>/dev/null; then
+            chmod +x /usr/local/bin/docker-compose
+            if docker-compose --version &> /dev/null; then
+                echo -e "${GREEN}✅ Docker Compose安装完成${NC}"
+                return 0
+            fi
+        fi
+    fi
+    
+    # 方法3：使用pip安装（最后备选）
+    echo -e "${YELLOW}   尝试使用pip安装...${NC}"
+    if command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
+        PIP_CMD=$(command -v pip3 || command -v pip)
+        $PIP_CMD install docker-compose 2>/dev/null
+        if docker-compose --version &> /dev/null; then
+            echo -e "${GREEN}✅ Docker Compose安装完成（使用pip）${NC}"
+            return 0
+        fi
+    fi
+    
+    echo -e "${YELLOW}⚠️  Docker Compose安装失败，但Docker已包含compose插件，可以继续使用${NC}"
+    echo -e "${YELLOW}   使用 'docker compose' 命令代替 'docker-compose'${NC}"
+    return 0
+}
+
+# 执行Docker Compose安装
+install_docker_compose
+
+# 验证Docker Compose
+if docker compose version &> /dev/null || docker-compose --version &> /dev/null; then
+    echo -e "${GREEN}✅ Docker Compose可用${NC}"
 else
-    echo -e "${GREEN}✅ Docker Compose已安装${NC}"
+    echo -e "${YELLOW}⚠️  Docker Compose未安装，但可以使用 'docker compose' 命令${NC}"
 fi
 
 # 创建项目目录
