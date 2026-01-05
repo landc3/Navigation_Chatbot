@@ -164,7 +164,32 @@ MIT License
 
 **GitHub仓库地址**: https://github.com/landc3/Navigation_Chatbot.git
 
-**完整部署步骤**：查看 [远程服务器部署指南.md](远程服务器部署指南.md)
+**完整部署步骤**：
+使用部署脚本（推荐）
+上传脚本到服务器（在本地PowerShell执行）：
+scp 部署脚本_阿里云_47.97.251.249.sh root@47.97.251.249:/root/
+
+在服务器上执行（SSH连接后）：
+chmod +x /root/部署脚本_阿里云_47.97.251.249.sh
+/root/部署脚本_阿里云_47.97.251.249.sh
+
+脚本会自动：
+安装Docker和Docker Compose
+从GitHub克隆项目
+提示配置API密钥
+构建并启动容器
+
+docker镜像下载失败问题
+1.使用镜像加速
+2.使用DockerHub:
+上传脚本：
+scp 方案_直接使用DockerHub.sh root@47.97.251.249:/root/
+执行：
+chmod +x /root/方案_直接使用DockerHub.sh/root/方案_直接使用DockerHub.sh
+构建：
+cd /root/Navigation_Chatbotdocker compose up --build -d
+
+
 
 **快速命令（Windows Server）：**
 ```powershell
