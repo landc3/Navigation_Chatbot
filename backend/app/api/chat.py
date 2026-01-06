@@ -200,7 +200,7 @@ async def chat(request: ChatRequest):
     query = request.message.strip()
     if not query:
         return ChatResponse(
-            message="请输入您要查找的电路图关键词，例如：东风天龙仪表针脚图",
+            message="请输入您要查找的电路图关键词，例如：天龙KL电路图",
             session_id=session_id
         )
     
@@ -294,7 +294,7 @@ async def chat(request: ChatRequest):
             query = query.replace(keyword, "").strip()
         if not query:
             return ChatResponse(
-                message="请输入您要查找的电路图关键词，例如：东风天龙仪表针脚图",
+                message="请输入您要查找的电路图关键词，例如：天龙KL电路图",
                 session_id=session_id
             )
     
@@ -1026,6 +1026,44 @@ async def chat(request: ChatRequest):
         return ChatResponse(message=error_message, session_id=session_id)
     
     total_found = len(scored_results)
+
+    # 通用规则：若当前候选只剩 1 条，直接返回结果，避免多余的点击
+    if total_found == 1:
+        only_result = scored_results[0]
+        formatted_result = {
+            "id": only_result.diagram.id,
+            "file_name": only_result.diagram.file_name,
+            "hierarchy_path": " -> ".join(only_result.diagram.hierarchy_path),
+            "score": round(only_result.score, 2),
+            "brand": only_result.diagram.brand,
+            "model": only_result.diagram.model,
+            "diagram_type": only_result.diagram.diagram_type,
+        }
+        message = "已为您找到以下电路图：\n\n"
+        message += f"1. [ID: {formatted_result['id']}] {formatted_result['file_name']}\n"
+        message += f"   路径: {formatted_result['hierarchy_path']}\n"
+        attrs = []
+        if formatted_result["brand"]:
+            attrs.append(f"品牌: {formatted_result['brand']}")
+        if formatted_result["model"]:
+            attrs.append(f"型号: {formatted_result['model']}")
+        if formatted_result["diagram_type"]:
+            attrs.append(f"类型: {formatted_result['diagram_type']}")
+        if attrs:
+            message += f"   {', '.join(attrs)}\n"
+        message += "\n"
+
+        conv_state.update_state(ConversationStateEnum.COMPLETED)
+        conv_state.current_options = []
+        conv_state.option_type = None
+        conv_state.add_message("assistant", message)
+
+        return ChatResponse(
+            message=message,
+            results=[formatted_result],
+            needs_choice=False,
+            session_id=session_id,
+        )
     
     print(f"🔍 搜索结果: {total_found} 个，max_results: {max_results}")
     
@@ -1061,6 +1099,8 @@ async def chat(request: ChatRequest):
         # 构建上下文信息（使用临时筛选历史）
         context = {
             "filter_history": temp_filter_history,
+            "user_filter_history": list(conv_state.filter_history),
+            "has_user_filters": bool(conv_state.filter_history),
             "current_query": conv_state.current_query,
             "total_results": total_found,
             "intent_result": {
@@ -1278,6 +1318,11 @@ async def chat(request: ChatRequest):
                         question_text = question_service._generate_question_text(
                             best_option_type, total_found, context
                         )
+
+                    # 首轮提问必须带上用户原始查询（即使 filter_history 里有意图注入）
+                    question_text = question_service._normalize_first_question_text(
+                        question_text, context
+                    )
                     
                     sliced_options = best_options[:max_options]
                     option_labels = question_service._make_option_labels(len(sliced_options))
@@ -1366,6 +1411,9 @@ async def chat(request: ChatRequest):
                         question_text = question_service._generate_question_text(
                             "brand_model", total_found, context
                         )
+                        question_text = question_service._normalize_first_question_text(
+                            question_text, context
+                        )
                         
                         option_labels = question_service._make_option_labels(len(options))
                         formatted_options = []
@@ -1444,6 +1492,9 @@ async def chat(request: ChatRequest):
                         question_text = question_service._generate_question_text(
                             "type", total_found, context
                         )
+                        question_text = question_service._normalize_first_question_text(
+                            question_text, context
+                        )
                         
                         option_labels = question_service._make_option_labels(len(options))
                         formatted_options = []
@@ -1489,6 +1540,9 @@ async def chat(request: ChatRequest):
 
                         question_text = question_service._generate_question_text(
                             "brand_model", total_found, context
+                        )
+                        question_text = question_service._normalize_first_question_text(
+                            question_text, context
                         )
 
                         option_labels = question_service._make_option_labels(len(options))

@@ -10,7 +10,7 @@ function App() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: '您好！我是智能车辆电路图资料导航助手。请输入您要查找的电路图关键词，例如：东风天龙仪表针脚图'
+      content: '您好！我是智能车辆电路图资料导航助手。请输入您要查找的电路图关键词，例如：天龙KL电路图'
     }
   ])
   const [isLoading, setIsLoading] = useState(false)

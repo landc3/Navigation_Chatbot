@@ -332,6 +332,10 @@ class QuestionService:
                         question_text = self._generate_question_text(option_type, len(results), context)
                 else:
                     question_text = self._generate_question_text(option_type, len(results), context)
+
+                # 统一首轮提问口径：必须带上用户查询/意图，形如“我找到了XX相关的数据。请问您需要的是：”
+                if not ((context or {}).get("filter_history")):
+                    question_text = self._normalize_first_question_text(question_text, context)
                 
                 # 仅对“文件名类”选项做相似合并：避免明显重复/仅细节差异的条目刷屏
                 # 注意：不强行把数量压到 <= 5；只在 options 足够多时启用（>5）
@@ -431,6 +435,68 @@ class QuestionService:
         
         # 如果所有方法都失败，返回None
         return None
+
+    def _normalize_first_question_text(
+        self,
+        question_text: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Ensure the first turn question explicitly mentions the user's query/intent,
+        e.g. “我找到了C81电路图相关的数据。请问您需要的是：”
+        """
+        ctx = context or {}
+        has_user_filters = bool(ctx.get("has_user_filters")) or bool(ctx.get("user_filter_history"))
+        subject = self._extract_first_question_subject(ctx)
+        desired = f"我找到了{subject}相关的数据。请问您需要的是："
+
+        # 仅在“用户尚未做出实际筛选”时强制首轮模板；避免覆盖后续追问的文本
+        if has_user_filters:
+            return question_text or desired
+        if not question_text:
+            return desired
+        # 若现有文本未包含“我找到了”或未包含主体信息，则改用标准模板
+        if ("我找到了" not in question_text) or (subject and subject not in question_text):
+            return desired
+        return question_text
+
+    def _extract_first_question_subject(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Decide what to display as the subject in the first-turn question.
+        Priority: explicit user query (含型号/代号) -> intent brand+model -> brand -> model -> fallback.
+        """
+        ctx = context or {}
+        intent_ctx = ctx.get("intent_result") or {}
+
+        # 用户原始查询：优先保留包含代号/数字的表达（如 C81、电路图）
+        current_query = (ctx.get("current_query") or "").strip()
+        current_query = re.sub(r"[，。.\s]+$", "", current_query)
+        if current_query:
+            # 包含字母或数字时，直接使用原始查询以避免被品牌覆盖
+            if re.search(r"[A-Za-z0-9]", current_query):
+                return current_query
+
+        subject = None
+        intent_brand = (intent_ctx.get("brand") or "").strip()
+        intent_model = (intent_ctx.get("model") or "").strip()
+
+        if intent_brand and intent_model:
+            subject = f"{intent_brand}{intent_model}"
+        elif intent_brand:
+            subject = intent_brand
+        elif intent_model:
+            subject = intent_model
+        elif current_query:
+            subject = current_query
+        else:
+            subject = "相关电路图"
+
+        # 简单清理末尾的无用符号
+        subject = re.sub(r"[，。.\s]+$", "", subject)
+        return subject or "相关电路图"
 
     def _extract_disjoint_type_options(
         self,
