@@ -196,6 +196,7 @@ function App() {
                 message={message}
                 onOptionClick={handleSendMessage}
                 onQuickAction={handleQuickAction}
+                onQuickReply={handleSendMessage}
                 optionsDisabled={isLoading}
               />
             ))}

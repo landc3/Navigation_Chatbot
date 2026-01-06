@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import './ChatMessage.css'
 
-function ChatMessage({ message, onOptionClick, onQuickAction, optionsDisabled = false }) {
+function ChatMessage({ message, onOptionClick, onQuickAction, onQuickReply, optionsDisabled = false }) {
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
 
@@ -35,9 +35,57 @@ function ChatMessage({ message, onOptionClick, onQuickAction, optionsDisabled = 
     }
   }
 
+  const renderContent = () => {
+    if (!message?.content) return null
+
+    // 当回复包含“是否需要”时，提供可点击的“需要”快捷按钮
+    const lines = message.content.split('\n')
+    return lines.map((line, index) => {
+      const hasNeedPrompt = !isUser && line.includes('是否需要') && typeof onQuickReply === 'function'
+      if (hasNeedPrompt) {
+        const needIndex = line.indexOf('需要')
+        const beforeNeed = line.slice(0, needIndex)
+        const afterNeed = line.slice(needIndex + 2)
+        return (
+          <React.Fragment key={index}>
+            {beforeNeed}
+            <button
+              type="button"
+              className="need-action-pill"
+              onClick={() => onQuickReply('需要')}
+              disabled={optionsDisabled}
+              aria-label="回复需要"
+            >
+              需要
+            </button>
+            {afterNeed}
+            {index < lines.length - 1 && <br />}
+          </React.Fragment>
+        )
+      }
+
+      return (
+        <React.Fragment key={index}>
+          {line}
+          {index < lines.length - 1 && <br />}
+        </React.Fragment>
+      )
+    })
+  }
+
   return (
     <div className={`chat-message ${isUser ? 'user' : 'assistant'}`}>
+      {!isUser && (
+        <div className="assistant-avatar" aria-hidden="true">
+          🤖
+        </div>
+      )}
       <div className="message-content">
+        {!isUser && (
+          <div className="message-bubble-icon" aria-hidden="true">
+            💡
+          </div>
+        )}
         {!isUser && (
           <div className="message-actions">
             <button
@@ -74,12 +122,7 @@ function ChatMessage({ message, onOptionClick, onQuickAction, optionsDisabled = 
           </div>
         )}
         <div className="message-text">
-          {message.content.split('\n').map((line, index) => (
-            <React.Fragment key={index}>
-              {line}
-              {index < message.content.split('\n').length - 1 && <br />}
-            </React.Fragment>
-          ))}
+          {renderContent()}
         </div>
         {message.options && message.options.length > 0 && (
           <div className="message-options">
