@@ -553,7 +553,7 @@ async def chat(request: ChatRequest):
                     except Exception:
                         preface = ""
 
-                    message = _prepend_selection_summary(preface + f"已为您找到以下电路图：\n\n", selection_summary)
+                    message = _prepend_selection_summary(preface + f"已为您找到以下相关数据：\n\n", selection_summary)
                     for i, result in enumerate(formatted_results, 1):
                         message += f"{i}. [ID: {result['id']}] {result['file_name']}\n"
                         message += f"   路径: {result['hierarchy_path']}\n"
@@ -779,7 +779,7 @@ async def chat(request: ChatRequest):
                 except Exception:
                     preface = ""
 
-                message = _prepend_selection_summary(preface + f"已为您找到以下电路图：\n\n", selection_summary)
+                message = _prepend_selection_summary(preface + f"已为您找到以下相关数据：\n\n", selection_summary)
                 for i, result in enumerate(formatted_results, 1):
                     message += f"{i}. [ID: {result['id']}] {result['file_name']}\n"
                     message += f"   路径: {result['hierarchy_path']}\n"
@@ -1039,7 +1039,7 @@ async def chat(request: ChatRequest):
             "model": only_result.diagram.model,
             "diagram_type": only_result.diagram.diagram_type,
         }
-        message = "已为您找到以下电路图：\n\n"
+        message = "已为您找到以下相关数据：\n\n"
         message += f"1. [ID: {formatted_result['id']}] {formatted_result['file_name']}\n"
         message += f"   路径: {formatted_result['hierarchy_path']}\n"
         attrs = []
