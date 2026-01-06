@@ -221,6 +221,37 @@ docker ps
 - **后端API**：`http://<你的公网IP>:8000`
 - **API文档**：`http://<你的公网IP>:8000/docs`
 
+#### 更新线上代码
+
+当你修改了本地代码并想更新到线上服务器：
+
+**快速更新（推荐）：**
+
+1. **本地提交代码到GitHub**
+   ```powershell
+   git add .
+   git commit -m "更新：描述你的修改"
+   git push origin master
+   ```
+
+2. **在服务器上执行更新脚本**
+   ```powershell
+   # 通过Workbench连接到服务器
+   cd C:\Navigation_Chatbot\scripts
+   .\update_remote.ps1
+   ```
+
+**手动更新：**
+```powershell
+# 在服务器上执行
+cd C:\Navigation_Chatbot
+git pull origin master
+docker compose down
+docker compose up --build -d
+```
+
+详细说明请查看 [更新部署指南.md](更新部署指南.md)
+
 ---
 
 ### 本地Docker部署
