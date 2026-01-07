@@ -200,7 +200,7 @@ async def chat(request: ChatRequest):
     query = request.message.strip()
     if not query:
         return ChatResponse(
-            message="请输入您要查找的电路图关键词，例如：天龙KL电路图",
+            message="请输入您要查找的电路图关键词，例如：重汽豪沃国六电路图、福田C81电路图",
             session_id=session_id
         )
     
@@ -219,7 +219,7 @@ async def chat(request: ChatRequest):
         # 添加用户消息到历史
         conv_state.add_message("user", query)
         # 返回友好的提示，引导用户重新输入
-        friendly_message = "好的，我已经清空了之前的搜索条件。\n\n请重新输入您要查找的电路图关键词，例如：\n- 东风天龙仪表针脚图\n- 重汽豪沃整车电路图\n- 解放JH6 ECU图"
+        friendly_message = "好的，我已经清空了之前的搜索条件。\n\n请重新输入您要查找的电路图关键词，例如：\n- 重汽豪沃国六电路图\n- C81电路图\n- 康明斯2880电路图"
         conv_state.add_message("assistant", friendly_message)
         return ChatResponse(
             message=friendly_message,
@@ -294,7 +294,7 @@ async def chat(request: ChatRequest):
             query = query.replace(keyword, "").strip()
         if not query:
             return ChatResponse(
-                message="请输入您要查找的电路图关键词，例如：天龙KL电路图",
+                message="请输入您要查找的电路图关键词，例如：重汽豪沃国六电路图、福田C81电路图",
                 session_id=session_id
             )
     
